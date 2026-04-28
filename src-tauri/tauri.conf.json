@@ -28,12 +28,22 @@
   },
   "bundle": {
     "active": true,
-    "targets": "app",
+    "createUpdaterArtifacts": true,
+    "targets": ["app", "dmg"],
     "icon": ["icons/icon.png"],
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "entitlements": "entitlements.plist"
+      "entitlements": "entitlements.plist",
+      "signingIdentity": "Developer ID Application: MICHAEL MEHLUM WILHELMSEN (NBUP88JQ35)"
     },
     "externalBin": ["binaries/audio-capture"]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/michaelwilhelmsen/humla/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDMjkzMDJGQjYxQTcyQTMKUldTamNocTJMekFwTEhISnRDNmJqemxSaHo3ejdmcFVZODYrMFdjaGQwNnUxTnVhczE1Skd5L2wK"
+    }
   }
 }

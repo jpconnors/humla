@@ -32,3 +32,4 @@ src-tauri/icons/.app-icon-staged.png
 .env
 .env.local
 .env.*.local
+.env.notarise

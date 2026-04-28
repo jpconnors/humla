@@ -47,13 +47,15 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   const upsertFolder = useNotesStore((s) => s.upsertFolder);
   const removeFolder = useNotesStore((s) => s.removeFolder);
   const [q, setQ] = useState("");
-  // Folders are open by default; collapse state stored locally per session.
-  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  // Folders are closed by default. The set tracks which ones the user has
+  // explicitly expanded. During an active search, folders with matching
+  // notes are force-expanded regardless of this set.
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
 
   function toggleFolder(id: string) {
-    setCollapsedFolders((prev) => {
+    setExpandedFolders((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -100,16 +102,19 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
     removeFolder(id);
   }
 
+  const needle = q.trim().toLowerCase();
+  const searching = needle.length > 0;
+
+  const noteMatches = (n: Note) =>
+    n.title.toLowerCase().includes(needle) ||
+    n.body.toLowerCase().includes(needle) ||
+    n.transcript.toLowerCase().includes(needle);
+
   const filteredNotes = useMemo(() => {
-    if (!q.trim()) return notes;
-    const needle = q.toLowerCase();
-    return notes.filter(
-      (n) =>
-        n.title.toLowerCase().includes(needle) ||
-        n.body.toLowerCase().includes(needle) ||
-        n.transcript.toLowerCase().includes(needle)
-    );
-  }, [notes, q]);
+    if (!searching) return notes;
+    return notes.filter(noteMatches);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes, needle]);
 
   const rootNotes = filteredNotes.filter((n) => n.folder_id == null);
   const folderNotes = useMemo(() => {
@@ -118,13 +123,45 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
     for (const n of filteredNotes) {
       if (n.folder_id && map.has(n.folder_id)) map.get(n.folder_id)!.push(n);
     }
-    // Within a folder, newest first.
     for (const arr of map.values()) arr.sort((a, b) => b.updated_at - a.updated_at);
     return map;
   }, [filteredNotes, folders]);
 
+  // During search, hide folders that have no matching notes AND whose name
+  // doesn't match either. Folder name match keeps the folder visible (with
+  // its full contents) so the user can scan inside.
+  const visibleFolders = searching
+    ? folders.filter((f) => {
+        if (f.name.toLowerCase().includes(needle)) return true;
+        return (folderNotes.get(f.id)?.length ?? 0) > 0;
+      })
+    : folders;
+
+  // Folder is expanded if user opened it OR (during search) it has matches.
+  const isFolderOpen = (f: Folder) => {
+    if (searching) {
+      // Folder name match → show full contents collapsed unless matches.
+      if (f.name.toLowerCase().includes(needle) && (folderNotes.get(f.id)?.length ?? 0) === 0) {
+        return expandedFolders.has(f.id);
+      }
+      return (folderNotes.get(f.id)?.length ?? 0) > 0 || expandedFolders.has(f.id);
+    }
+    return expandedFolders.has(f.id);
+  };
+
+  // For folder-name matches with no matching notes, show the folder's
+  // unfiltered note list when expanded so you can browse inside.
+  const itemsForFolder = (f: Folder): Note[] => {
+    const matched = folderNotes.get(f.id) ?? [];
+    if (searching && matched.length === 0 && f.name.toLowerCase().includes(needle)) {
+      return notes.filter((n) => n.folder_id === f.id).sort((a, b) => b.updated_at - a.updated_at);
+    }
+    return matched;
+  };
+
   const rootGrouped = group(rootNotes);
   const empty = folders.length === 0 && rootGrouped.length === 0;
+  const noResults = searching && visibleFolders.length === 0 && rootGrouped.length === 0;
 
   return (
     <div className="h-full flex flex-col p-3 gap-2">
@@ -211,23 +248,22 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
         {empty && (
           <div className="px-2 py-4 text-sm text-[var(--color-text-muted)]">No notes yet</div>
         )}
+        {noResults && (
+          <div className="px-2 py-4 text-sm text-[var(--color-text-muted)]">No matches</div>
+        )}
 
-        {folders.map((f) => {
-          const items = folderNotes.get(f.id) ?? [];
-          const collapsed = collapsedFolders.has(f.id);
-          return (
-            <FolderSection
-              key={f.id}
-              folder={f}
-              items={items}
-              collapsed={collapsed}
-              onToggle={() => toggleFolder(f.id)}
-              onDelete={(e) => deleteFolder(e, f.id)}
-              onDeleteNote={deleteNote}
-              activePath={location.pathname}
-            />
-          );
-        })}
+        {visibleFolders.map((f) => (
+          <FolderSection
+            key={f.id}
+            folder={f}
+            items={itemsForFolder(f)}
+            collapsed={!isFolderOpen(f)}
+            onToggle={() => toggleFolder(f.id)}
+            onDelete={(e) => deleteFolder(e, f.id)}
+            onDeleteNote={deleteNote}
+            activePath={location.pathname}
+          />
+        ))}
 
         {rootGrouped.map((g) => (
           <div key={g.label} className="mb-3">

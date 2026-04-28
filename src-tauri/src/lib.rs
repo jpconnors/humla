@@ -9,7 +9,8 @@ mod commands;
 
 use std::sync::Arc;
 use parking_lot::Mutex;
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{Emitter, Manager};
 
 pub struct AppState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
@@ -20,6 +21,8 @@ pub struct AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let app_dir = app
@@ -34,6 +37,15 @@ pub fn run() {
                 recording: Arc::new(Mutex::new(recording::RecordingSession::default())),
                 whisper: local_whisper::new_shared(),
             });
+
+            let menu = build_menu(app.handle())?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                if event.id().as_ref() == "check-for-updates" {
+                    let _ = app.emit("menu://check-for-updates", ());
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -70,4 +82,73 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
+}
+
+fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let app_name = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "Humla".to_string());
+
+    let about = PredefinedMenuItem::about(app, None, None)?;
+    let check_for_updates = MenuItem::with_id(
+        app,
+        "check-for-updates",
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
+    let services = PredefinedMenuItem::services(app, None)?;
+    let hide = PredefinedMenuItem::hide(app, None)?;
+    let hide_others = PredefinedMenuItem::hide_others(app, None)?;
+    let show_all = PredefinedMenuItem::show_all(app, None)?;
+    let quit = PredefinedMenuItem::quit(app, None)?;
+    let sep = || PredefinedMenuItem::separator(app);
+
+    let app_submenu = Submenu::with_items(
+        app,
+        &app_name,
+        true,
+        &[
+            &about,
+            &sep()?,
+            &check_for_updates,
+            &sep()?,
+            &services,
+            &sep()?,
+            &hide,
+            &hide_others,
+            &show_all,
+            &sep()?,
+            &quit,
+        ],
+    )?;
+
+    let edit_submenu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &sep()?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+
+    let window_submenu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    Menu::with_items(app, &[&app_submenu, &edit_submenu, &window_submenu])
 }

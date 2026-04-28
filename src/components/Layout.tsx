@@ -2,6 +2,7 @@ import { Outlet, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { Toaster } from "./Toaster";
+import { Updater } from "./Updater";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { bindBackendListeners } from "../lib/store";
 import { cn } from "../lib/cn";
@@ -47,6 +48,7 @@ export function Layout() {
         </ErrorBoundary>
       </main>
       <Toaster />
+      <Updater />
     </div>
   );
 }
