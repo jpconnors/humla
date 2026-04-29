@@ -2,6 +2,7 @@ mod db;
 mod openai;
 mod local_whisper;
 mod diarize;
+mod gguf;
 mod presets;
 mod wav;
 mod recording;
