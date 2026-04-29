@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
@@ -323,6 +324,31 @@ impl StreamingDiarizer {
         Ok(id)
     }
 
+    /// Wipe the speaker memory between recordings so a fresh meeting
+    /// doesn't get matched against the previous meeting's voices. The
+    /// sidecar processes each command FIFO and emits exactly one response
+    /// line, so reading the next line is the right answer here too.
+    pub async fn reset(&mut self) -> Result<()> {
+        let req = serde_json::json!({ "cmd": "reset" });
+        let mut line = req.to_string();
+        line.push('\n');
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| anyhow!("write reset: {e}"))?;
+        self.stdin.flush().await.map_err(|e| anyhow!("flush reset: {e}"))?;
+
+        let resp = tokio::time::timeout(Duration::from_secs(5), self.stdout_lines.next_line())
+            .await
+            .map_err(|_| anyhow!("reset timed out"))?
+            .map_err(|e| anyhow!("read reset response: {e}"))?
+            .ok_or_else(|| anyhow!("reset: sidecar closed stdout"))?;
+        if !resp.contains("reset_done") {
+            return Err(anyhow!("unexpected reset response: {resp}"));
+        }
+        Ok(())
+    }
+
     /// Cleanly stop the sidecar by closing stdin (signals EOF; the sidecar
     /// breaks out of its readLine loop and exits 0). Falls back to SIGKILL
     /// if it doesn't exit promptly.
@@ -330,6 +356,32 @@ impl StreamingDiarizer {
         drop(self.stdin);
         let _ = tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await;
         let _ = self.child.kill().await;
+    }
+}
+
+/// Spawn the streaming sidecar if the model is downloaded and the slot is
+/// currently empty. Idempotent — if a sidecar is already running, this is
+/// a no-op. Used by app launch and by the diarize_download success handler
+/// so the sidecar warms up the moment the model is available.
+pub async fn ensure_streaming_running(
+    app: &AppHandle,
+    slot: &Arc<tokio::sync::Mutex<Option<StreamingDiarizer>>>,
+) {
+    let already_running = slot.lock().await.is_some();
+    if already_running {
+        return;
+    }
+    match status(app).await {
+        Ok(s) if s.downloaded => {}
+        _ => return,
+    }
+    match StreamingDiarizer::start(app).await {
+        Ok(d) => {
+            *slot.lock().await = Some(d);
+        }
+        Err(e) => {
+            eprintln!("streaming diarize start: {e}");
+        }
     }
 }
 

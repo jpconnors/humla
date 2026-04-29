@@ -196,12 +196,27 @@ pub async fn diarize_status(app: AppHandle) -> Result<diarize::ModelStatus, Stri
 }
 
 #[tauri::command]
-pub async fn diarize_download(app: AppHandle) -> Result<(), String> {
-    diarize::download(&app).await.map_err(err)
+pub async fn diarize_download(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    diarize::download(&app).await.map_err(err)?;
+    // Once the model is on disk, prewarm the streaming sidecar so it's
+    // already running for the user's next recording instead of a fresh
+    // 1–2 s spin-up at recording_start.
+    let stream_arc = state.diarize_stream.clone();
+    let app_for_warm = app.clone();
+    tokio::spawn(async move {
+        diarize::ensure_streaming_running(&app_for_warm, &stream_arc).await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn diarize_delete(app: AppHandle) -> Result<(), String> {
+pub async fn diarize_delete(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // Shut down the streaming sidecar before wiping the model directory —
+    // the live process might be holding model files open via the loaded
+    // CoreML context, and we don't want a half-deleted state.
+    if let Some(d) = state.diarize_stream.lock().await.take() {
+        d.shutdown().await;
+    }
     diarize::delete(&app).await.map_err(err)
 }
 
@@ -568,29 +583,27 @@ pub async fn recording_start(
         *s.last_speaker.lock() = None;
     }
 
-    // Live diarization: if the model is downloaded, spawn the streaming
-    // sidecar so transcribe_chunk can classify each chunk as it arrives.
-    // Failures here are non-fatal — recording proceeds without speaker
-    // tagging if the sidecar can't start.
+    // Live diarization: the streaming sidecar is spawned at app launch
+    // (and after a successful model download), so usually it's already
+    // warm by the time we get here. Reset its speaker memory so a fresh
+    // recording doesn't get matched against the previous meeting's
+    // voices. If the sidecar isn't running yet (model wasn't downloaded
+    // at app start, or the prewarm task is still in flight), spin it up
+    // now in the background — first few chunks may land unprefixed but
+    // subsequent ones tag correctly.
     {
         let state: State<AppState> = app.state();
         let stream_arc = state.diarize_stream.clone();
         let app_for_diarize = app.clone();
         tokio::spawn(async move {
-            // Check the model is on disk first; otherwise the sidecar would
-            // try to download it (~30 s on first run) inline with a
-            // recording that's already underway.
-            match diarize::status(&app_for_diarize).await {
-                Ok(s) if s.downloaded => {}
-                _ => return,
-            }
-            match diarize::StreamingDiarizer::start(&app_for_diarize).await {
-                Ok(d) => {
-                    *stream_arc.lock().await = Some(d);
+            let mut guard = stream_arc.lock().await;
+            if let Some(d) = guard.as_mut() {
+                if let Err(e) = d.reset().await {
+                    eprintln!("streaming diarize reset: {e}");
                 }
-                Err(e) => {
-                    eprintln!("streaming diarize start: {e}");
-                }
+            } else {
+                drop(guard);
+                diarize::ensure_streaming_running(&app_for_diarize, &stream_arc).await;
             }
         });
     }
@@ -740,17 +753,11 @@ pub async fn recording_stop(
     };
     let _ = tokio::time::timeout(std::time::Duration::from_secs(30), drain).await;
 
-    // Tear down the live-diarization sidecar — chunks have already been
-    // classified inline as they arrived; nothing left to do with it.
-    {
-        let state_for_shutdown: State<AppState> = app.state();
-        let stream_arc = state_for_shutdown.diarize_stream.clone();
-        tokio::spawn(async move {
-            if let Some(d) = stream_arc.lock().await.take() {
-                d.shutdown().await;
-            }
-        });
-    }
+    // The streaming diarize sidecar is NOT torn down here — it stays
+    // alive across recordings so the next recording's chunks tag
+    // immediately. recording_start sends a `reset` command to wipe the
+    // SpeakerManager between sessions. The sidecar exits when the app
+    // does (parent-death watchdog OR drop semantics).
 
     // Spawn the post-stop processing chain in the background:
     //   Stopping → Polishing → Idle

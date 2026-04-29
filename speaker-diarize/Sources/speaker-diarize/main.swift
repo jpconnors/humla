@@ -139,8 +139,25 @@ func runStreaming() async -> Int32 {
 
         while let line = readLine() {
             guard let data = line.data(using: .utf8),
-                  let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let path = req["path"] as? String else {
+                  let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            // Default to classify when cmd is omitted (back-compat).
+            let cmd = (req["cmd"] as? String) ?? "classify"
+
+            if cmd == "reset" {
+                // Wipe the SpeakerManager between recordings so meeting 1's
+                // "Speaker 1" embedding doesn't match against meeting 2's
+                // voices. The actor reset is fast — just clears the
+                // in-memory speaker database; doesn't touch the model.
+                await diarizer.speakerManager.reset(keepIfPermanent: false)
+                writeStdout(["event": "reset_done"] as [String: Any])
+                continue
+            }
+
+            // classify (default)
+            guard let path = req["path"] as? String else {
+                writeStdout(["error": "missing path"] as [String: Any])
                 continue
             }
             do {

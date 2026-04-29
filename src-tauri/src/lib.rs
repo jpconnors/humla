@@ -42,12 +42,23 @@ pub fn run() {
             std::fs::create_dir_all(&app_dir).ok();
             let db_path = app_dir.join("notes.sqlite");
             let conn = db::open(&db_path).expect("open db");
+            let diarize_stream = Arc::new(tokio::sync::Mutex::new(None));
             app.manage(AppState {
                 db: Arc::new(Mutex::new(conn)),
                 recording: Arc::new(Mutex::new(recording::RecordingSession::default())),
                 whisper: local_whisper::new_shared(),
                 transcribe_gate: Arc::new(tokio::sync::Mutex::new(())),
-                diarize_stream: Arc::new(tokio::sync::Mutex::new(None)),
+                diarize_stream: diarize_stream.clone(),
+            });
+
+            // Pre-warm the streaming diarization sidecar at app launch if
+            // the model is on disk. ~1 s of CPU + a few MB resident, but
+            // the user gets speaker tags from chunk 1 of their next
+            // recording instead of a 1–30 s warmup window where the early
+            // chunks land unprefixed.
+            let app_for_prewarm = app.handle().clone();
+            tokio::spawn(async move {
+                diarize::ensure_streaming_running(&app_for_prewarm, &diarize_stream).await;
             });
 
             let menu = build_menu(app.handle())?;
