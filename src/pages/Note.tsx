@@ -181,7 +181,7 @@ export function Note() {
         )}
 
         {showTranscriptSection && (
-          <Card className="mt-4">
+          <Card className="mt-4 focus-within:border-[var(--color-text)] transition-colors">
             <h2 className="nd-label mb-4 flex items-center gap-3">
               <span>Transcript</span>
               {isRecording && (
@@ -485,12 +485,16 @@ function SpeakerChip({
   }
 
   if (editing) {
+    // size= sets the visible character width; with monospace font this
+    // makes the input width track the typed text. Floor at 3 so the
+    // pill never collapses to nothing while the user is mid-edit.
     return (
       <input
         ref={inputRef}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
+        size={Math.max(draft.length, 3)}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -502,7 +506,7 @@ function SpeakerChip({
           }
         }}
         className="nd-speaker-pill cursor-text outline-none"
-        style={{ background: color, minWidth: "8ch" }}
+        style={{ background: color }}
       />
     );
   }
@@ -539,10 +543,11 @@ function TranscriptEditor({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = el.scrollHeight + "px";
-    el.focus();
-    // Park the cursor at the end so the user can append without
-    // re-positioning. Could be smarter (cursor at click position) but
-    // good enough for v1.
+    // preventScroll so the browser doesn't yank the viewport when the
+    // textarea takes focus — the user clicked here, they don't want to
+    // be teleported. Cursor parks at end (could be smarter — map click
+    // position to character index — but good enough for v1).
+    el.focus({ preventScroll: true });
     const len = el.value.length;
     el.setSelectionRange(len, len);
   }, [editing, value]);
