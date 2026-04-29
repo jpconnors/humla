@@ -586,10 +586,16 @@ function TranscriptEditor({
   );
 }
 
-// Styled transcript reader. Each line that begins with a speaker label
-// renders the label as a coloured pill; the rest of the line stays as
-// plain text. Lines without a label render as plain paragraphs. The whole
-// view is click-to-edit unless `disabled` (i.e. recording is in flight).
+// Styled transcript reader. Renders the transcript as a single
+// pre-wrapped block so its rendered height matches the textarea exactly —
+// no paragraph margins to add 8 px per line, which was causing the page
+// to jump up when the card shrank into edit mode.
+//
+// Speaker labels at line starts ("Label: rest") get replaced with an
+// inline coloured pill plus the rest; everything else flows as plain
+// text with native \n line breaks preserved by white-space: pre-wrap.
+// The whole view is click-to-edit unless `disabled` (recording in
+// flight).
 function TranscriptView({
   transcript,
   onClick,
@@ -608,36 +614,34 @@ function TranscriptView({
       onClick={onClick}
       title={disabled ? "Editing is paused while recording" : "Click to edit"}
       className={
-        "text-sm leading-relaxed text-[var(--color-text-muted)] " +
+        "text-sm leading-relaxed text-[var(--color-text-muted)] whitespace-pre-wrap " +
         (disabled ? "cursor-default" : "cursor-text")
       }
     >
       {lines.map((line, i) => {
+        const prefix = i > 0 ? "\n" : "";
         const m = line.match(/^(\s*)([^:]{1,40}):\s(.*)$/);
         if (m) {
           const [, lead, label, rest] = m;
           const color = colors.get(label.trim());
           if (color) {
             return (
-              <p key={i} className={i > 0 ? "mt-2" : ""}>
+              <span key={i}>
+                {prefix}
                 {lead}
                 <span className="nd-speaker-pill mr-2" style={{ background: color }}>
                   {label}
                 </span>
                 {rest}
-              </p>
+              </span>
             );
           }
         }
-        // Empty line → preserve vertical rhythm without rendering a
-        // zero-height paragraph (would collapse).
-        if (line.trim() === "") {
-          return <p key={i} className="h-3" aria-hidden />;
-        }
         return (
-          <p key={i} className={i > 0 ? "mt-2" : ""}>
+          <span key={i}>
+            {prefix}
             {line}
-          </p>
+          </span>
         );
       })}
     </div>
