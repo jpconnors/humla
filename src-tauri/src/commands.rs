@@ -1209,6 +1209,66 @@ struct TranscribeCfg {
     vocabulary: String,
 }
 
+// Resolved provider for a single polish or summary call. `OpenAi` carries the
+// API key + model name; `Local` carries the model kind + on-disk path. The
+// dispatch happens after this resolves, inside polish_transcript/run_summary.
+enum ResolvedProvider {
+    OpenAi { api_key: String, model: String },
+    Local { kind: local_llm::ModelKind, path: PathBuf },
+}
+
+// Decide whether this note's polish/summary call should hit OpenAI or the
+// local LLM. Note-level override beats the global setting; default is openai.
+//
+// For local: requires `summary_local_model` to be set AND the resolved model
+// file to exist on disk. Either condition missing returns an actionable error.
+fn resolve_provider(
+    conn: &rusqlite::Connection,
+    note: &Note,
+    app: &AppHandle,
+) -> anyhow::Result<ResolvedProvider> {
+    let provider = note
+        .summary_provider
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| db::get_setting(conn, "summary_provider").ok().flatten())
+        .unwrap_or_else(|| "openai".into());
+
+    match provider.as_str() {
+        "local" => {
+            let model_setting = db::get_setting(conn, "summary_local_model")?
+                .ok_or_else(|| anyhow::anyhow!(
+                    "local LLM not configured — pick a model in Settings"
+                ))?;
+            let kind = local_llm::ModelKind::from_setting(&model_setting)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "invalid summary_local_model: {model_setting}"
+                ))?;
+            let app_data = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| anyhow::anyhow!("app data dir: {e}"))?;
+            let path = local_llm::resolve_path(&kind, &app_data);
+            if !path.exists() {
+                return Err(anyhow::anyhow!(
+                    "local model file missing at {}",
+                    path.display()
+                ));
+            }
+            Ok(ResolvedProvider::Local { kind, path })
+        }
+        _ => {
+            let api_key = db::get_setting(conn, API_KEY)?
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("OpenAI API key not set"))?;
+            let model = db::get_setting(conn, "summary_model")?
+                .unwrap_or_else(|| DEFAULT_SUMMARY_MODEL.to_string());
+            Ok(ResolvedProvider::OpenAi { api_key, model })
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn summarize_note(app: AppHandle, note_id: String) -> Result<(), String> {
     // Reflect the in-flight summary in the recording status so the UI can
@@ -1230,24 +1290,22 @@ pub async fn summarize_note(app: AppHandle, note_id: String) -> Result<(), Strin
 // (the user started another recording on the same note while polish was in
 // flight) — the latter check prevents losing freshly-appended chunks.
 async fn polish_transcript(app: AppHandle, note_id: String) -> anyhow::Result<()> {
-    let (api_key, model, transcript_snapshot, body, vocabulary) = {
+    let (provider, transcript_snapshot, body, vocabulary) = {
         let state: State<AppState> = app.state();
         let conn = state.db.lock();
-        let key = match db::get_setting(&conn, API_KEY)? {
-            Some(s) if !s.trim().is_empty() => s.trim().to_string(),
-            _ => return Ok(()), // no key → silently skip
-        };
-        let m = db::get_setting(&conn, "summary_model")?
-            .unwrap_or_else(|| DEFAULT_SUMMARY_MODEL.to_string());
         let n = db::get_note(&conn, &note_id)?;
         if n.transcript.trim().is_empty() {
             return Ok(()); // nothing to polish
         }
+        // No-provider conditions (no API key, no local model) silently skip
+        // — polish is a best-effort step, not something to error the recording out for.
+        let provider = match resolve_provider(&conn, &n, &app) {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        };
         let vocab = db::get_setting(&conn, "custom_vocabulary")?.unwrap_or_default();
-        (key, m, n.transcript.clone(), n.body.clone(), vocab)
+        (provider, n.transcript.clone(), n.body.clone(), vocab)
     };
-
-    emit_status(&app, Some(&note_id), Phase::Polishing);
 
     let body_text = html_to_text(&body);
     let vocab_section = if vocabulary.trim().is_empty() {
@@ -1263,7 +1321,33 @@ async fn polish_transcript(app: AppHandle, note_id: String) -> anyhow::Result<()
     let user_message =
         format!("{vocab_section}{notes_section}[Raw transcript]\n{transcript_snapshot}");
 
-    let polished = openai::summarize(&api_key, &model, DEFAULT_POLISH_PROMPT, &user_message).await?;
+    // Surface a "Loading model" phase before generation starts on the local
+    // path so the toast shows the slow cold-load instead of a stuck "Polishing".
+    let polished = match provider {
+        ResolvedProvider::OpenAi { api_key, model } => {
+            emit_status(&app, Some(&note_id), Phase::Polishing);
+            openai::summarize(&api_key, &model, DEFAULT_POLISH_PROMPT, &user_message).await?
+        }
+        ResolvedProvider::Local { kind, path } => {
+            emit_status(&app, Some(&note_id), Phase::LoadingModel);
+            let state: State<AppState> = app.state();
+            let llm = state.llm.clone();
+            local_llm::prewarm(llm.clone(), kind.clone(), path.clone()).await?;
+            emit_status(&app, Some(&note_id), Phase::Polishing);
+            // Allow up to 4096 generation tokens — polish output should never
+            // exceed input length, but the limit prevents an infinite loop on
+            // a confused model.
+            local_llm::generate(
+                llm,
+                kind,
+                path,
+                DEFAULT_POLISH_PROMPT.to_string(),
+                user_message,
+                4096,
+            )
+            .await?
+        }
+    };
     let polished = polished.trim().to_string();
     if polished.is_empty() {
         return Ok(());
@@ -1301,20 +1385,15 @@ async fn polish_transcript(app: AppHandle, note_id: String) -> anyhow::Result<()
 }
 
 async fn run_summary(app: AppHandle, note_id: String) -> anyhow::Result<()> {
-    let (api_key, model, custom_prompt, language, note) = {
+    let (provider, custom_prompt, language, note) = {
         let state: State<AppState> = app.state();
         let conn = state.db.lock();
-        let key = db::get_setting(&conn, API_KEY)?
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("no api key"))?;
-        let m = db::get_setting(&conn, "summary_model")?
-            .unwrap_or_else(|| DEFAULT_SUMMARY_MODEL.to_string());
+        let n = db::get_note(&conn, &note_id)?;
+        let p_resolved = resolve_provider(&conn, &n, &app)?;
         let p = db::get_setting(&conn, "summary_prompt")?
             .unwrap_or_else(|| DEFAULT_SUMMARY_PROMPT.to_string());
         let global_lang = db::get_setting(&conn, "language")?
             .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
-        let n = db::get_note(&conn, &note_id)?;
         // Same fallback rule as transcription: note language wins, empty
         // means "follow the global default".
         let lang = if n.language.trim().is_empty() {
@@ -1322,7 +1401,7 @@ async fn run_summary(app: AppHandle, note_id: String) -> anyhow::Result<()> {
         } else {
             n.language.clone()
         };
-        (key, m, p, lang, n)
+        (p_resolved, p, lang, n)
     };
     if note.transcript.trim().is_empty() && note.body.trim().is_empty() {
         return Ok(());
@@ -1343,7 +1422,19 @@ async fn run_summary(app: AppHandle, note_id: String) -> anyhow::Result<()> {
     // Hard language directive in case the prompt was authored in a different
     // language than the user has now chosen.
     let full_prompt = format!("{prompt}\n\n{}", language_directive(&language));
-    let summary = openai::summarize(&api_key, &model, &full_prompt, &user_message).await?;
+    let summary = match provider {
+        ResolvedProvider::OpenAi { api_key, model } => {
+            openai::summarize(&api_key, &model, &full_prompt, &user_message).await?
+        }
+        ResolvedProvider::Local { kind, path } => {
+            emit_status(&app, Some(&note_id), Phase::LoadingModel);
+            let state: State<AppState> = app.state();
+            let llm = state.llm.clone();
+            local_llm::prewarm(llm.clone(), kind.clone(), path.clone()).await?;
+            emit_status(&app, Some(&note_id), Phase::Summarizing);
+            local_llm::generate(llm, kind, path, full_prompt, user_message, 4096).await?
+        }
+    };
     let state: State<AppState> = app.state();
     {
         let conn = state.db.lock();
