@@ -96,29 +96,36 @@
   color-scheme: dark;
 }
 
-html, body, #root {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  background: var(--color-canvas);
-  color: var(--color-text);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+/* Wrap base resets in @layer base so Tailwind utilities (which live in
+   @layer utilities) can override them via the layer cascade. Unlayered
+   rules win over ANY @layer regardless of selector specificity, which
+   was masking text-color utilities on form controls — most visibly the
+   "Install & Restart" button rendering black-on-black. */
+@layer base {
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: var(--color-canvas);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button { font-family: inherit; color: inherit; }
+
+  input, select, textarea {
+    font-family: inherit;
+    color: inherit;
+    outline: none;
+  }
+
+  /* Default form-control surface. Inputs stay transparent (they're often
+     embedded in styled containers) but selects and textareas always read
+     as form fields. */
+  input { background: transparent; }
 }
-
-button { font-family: inherit; color: inherit; }
-
-input, select, textarea {
-  font-family: inherit;
-  color: inherit;
-  outline: none;
-}
-
-/* Default form-control surface. Inputs stay transparent (they're often
-   embedded in styled containers) but selects and textareas always read as
-   form fields. */
-input { background: transparent; }
 
 select, textarea {
   background: var(--color-input-bg);
