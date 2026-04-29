@@ -3,10 +3,13 @@
 // inference on a blocking thread. This file currently defines types + paths;
 // model loading lands in a follow-up task.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::LlamaModel;
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 // Default download targets. Both are sourced from the canonical ggml-org
 // repos on HuggingFace. E2B has no Q4_K_M published — Q8_0 of a 2B model is
@@ -75,7 +78,7 @@ pub fn resolve_path(kind: &ModelKind, app_data_dir: &Path) -> PathBuf {
 pub struct LoadedModel {
     pub path: PathBuf,
     pub kind: ModelKind,
-    // Model handle lands in the next task once we wire llama-cpp-2.
+    pub model: Arc<LlamaModel>,
 }
 
 pub type SharedContext = Arc<Mutex<Option<LoadedModel>>>;
@@ -88,9 +91,60 @@ pub fn unload(shared: &SharedContext) {
     *shared.lock() = None;
 }
 
-#[allow(dead_code)] // wired up in Task 5
-pub async fn prewarm(_shared: SharedContext, _kind: ModelKind, _model_path: PathBuf) -> Result<()> {
-    Ok(())
+// LlamaBackend::init() is process-global state — calling it twice is undefined.
+// OnceLock makes the second call a cheap no-op and the first call ~50ms.
+fn backend() -> &'static LlamaBackend {
+    static B: OnceLock<LlamaBackend> = OnceLock::new();
+    B.get_or_init(|| LlamaBackend::init().expect("llama backend init"))
+}
+
+// Load the model from disk if it isn't already, otherwise return the cached
+// handle. Loading a 5 GB Q4 model takes ~5–10s on M2; subsequent calls are
+// instant. Caller must hold a write to `shared` for the duration to avoid
+// two threads racing the load and ending up with two copies in RAM.
+fn ensure_loaded(
+    shared: &SharedContext,
+    kind: &ModelKind,
+    model_path: &Path,
+) -> Result<Arc<LlamaModel>> {
+    let mut guard = shared.lock();
+    if let Some(loaded) = guard.as_ref() {
+        if loaded.path == model_path {
+            return Ok(loaded.model.clone());
+        }
+    }
+    if !model_path.exists() {
+        return Err(anyhow!(
+            "Local LLM model not found at {}",
+            model_path.display()
+        ));
+    }
+    // n_gpu_layers=999 is llama.cpp's "offload everything" sentinel — the C
+    // side clamps it to the model's actual layer count. On Apple Silicon the
+    // Metal backend is built in by default, so this routes through the GPU
+    // without any explicit feature flag.
+    let params = LlamaModelParams::default().with_n_gpu_layers(999);
+    let model = LlamaModel::load_from_file(backend(), model_path, &params)
+        .map_err(|e| anyhow!("load llama model: {e}"))?;
+    let arc = Arc::new(model);
+    *guard = Some(LoadedModel {
+        path: model_path.to_path_buf(),
+        kind: kind.clone(),
+        model: arc.clone(),
+    });
+    Ok(arc)
+}
+
+// Async wrapper around ensure_loaded so callers can await the load on a
+// blocking thread without stalling the tokio reactor. Used by polish_transcript
+// to surface a "Loading model…" toast before generation starts.
+pub async fn prewarm(shared: SharedContext, kind: ModelKind, model_path: PathBuf) -> Result<()> {
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        ensure_loaded(&shared, &kind, &model_path)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow!("prewarm task: {e}"))?
 }
 
 #[cfg(test)]
