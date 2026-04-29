@@ -57,6 +57,20 @@ pub fn unload(shared: &SharedContext) {
     *shared.lock() = None;
 }
 
+/// Load the model into memory + Metal context if it isn't already. Cheap
+/// no-op on subsequent calls. Called from `recording_start` so the first
+/// chunk doesn't pay the 1–2 second cold-start tax — by the time VAD
+/// rotates the first chunk (≥ 1 s of speech + 500 ms silence), the model
+/// is ready and inference runs at ~5× realtime.
+pub async fn prewarm(shared: SharedContext, model_path: PathBuf) -> Result<()> {
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        ensure_loaded(&shared, &model_path)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow!("prewarm task: {e}"))?
+}
+
 pub async fn transcribe_file(
     shared: SharedContext,
     model_path: PathBuf,

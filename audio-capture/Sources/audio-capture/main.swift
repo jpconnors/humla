@@ -227,11 +227,14 @@ final class ChunkWriter {
     }
 }
 
-// Min 1.5s prevents micro-chunks that lose context. Max 12s caps so a
-// monologue with no pauses still gets transcribed periodically and the
-// trailing-context prompt stays fresh. 600 ms silence ≈ a normal sentence
-// pause; tighter values trigger on word-internal stops.
-let writer = ChunkWriter(dir: outDir, minSeconds: 1.5, maxSeconds: 12.0, vadSilenceMs: 600.0)
+// Tuned for snappy live captioning:
+//   - minSeconds 1.0 lets short utterances ("yes", "ok, let's go") flush
+//     quickly instead of waiting for the next clause.
+//   - maxSeconds 8.0 caps unbroken monologues so the UI sees fresh text
+//     within ~8 s even if the speaker never pauses.
+//   - vadSilenceMs 500 catches sentence-end pauses without triggering on
+//     normal between-word stops (which are typically 100–300 ms).
+let writer = ChunkWriter(dir: outDir, minSeconds: 1.0, maxSeconds: 8.0, vadSilenceMs: 500.0)
 
 // MARK: - Stats (diagnostics)
 

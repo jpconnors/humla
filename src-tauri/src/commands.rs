@@ -400,6 +400,21 @@ pub async fn recording_start(
         return Err(msg.to_string());
     }
 
+    // Race a Whisper model load against the sidecar startup so the first
+    // chunk doesn't pay the cold-start tax (~1–2 s on Apple Silicon). Fire
+    // and forget — by the time VAD rotates the first chunk, the model is
+    // already in Metal memory and inference is fast.
+    if provider == "local" {
+        if let Ok(model_path) = local_model_path(&app) {
+            let shared = state.whisper.clone();
+            tokio::spawn(async move {
+                if let Err(e) = local_whisper::prewarm(shared, model_path).await {
+                    eprintln!("whisper prewarm: {e}");
+                }
+            });
+        }
+    }
+
     // Pre-check microphone permission — without it we can't capture anything useful.
     if let Ok(p) = permissions_status(app.clone()).await {
         if p.microphone != "granted" {
@@ -962,11 +977,18 @@ fn strip_attribution_tail(text: &str) -> String {
     // with the original string for slicing.
     let lower = text.to_ascii_lowercase();
     const TRIGGERS: &[&str] = &[
-        // Norwegian/Scandinavian subtitle credits
+        // Norwegian/Scandinavian subtitle credits. Whisper memorised whole
+        // sign-off phrases from broadcast subtitles, so each verb form needs
+        // its own trigger — past-participle ("tekstet"), gerund ("teksting"),
+        // and noun form ("tekster") all show up in the wild.
         "undertekster av",
         "undertekstet av",
         "tekstet av",
+        "tekster av",
+        "teksting av",
         "norske tekster",
+        "oversatt av",
+        "oversettelse av",
         // English subtitle credits
         "subtitles by",
         "subtitled by",
