@@ -302,35 +302,84 @@ select {
   color: var(--color-text);
 }
 
-.prose-note > * + * { margin-top: 0.85em; }
+/* Reset every block's default margin so the per-block rules below can set
+   their own spacing without fighting Tailwind's preflight. Wrapped in
+   :where() so this carries zero specificity weight and never overrides the
+   rules that actually matter. */
+.prose-note :where(h1, h2, h3, h4, p, ul, ol, blockquote, pre, hr) {
+  margin: 0;
+}
 
+/* Body spacing: 1em between any two adjacent blocks of body-class content
+   (paragraphs, lists, quotes, code, dividers). Headings opt out via their
+   own larger margin-top below. */
+.prose-note p + p,
+.prose-note p + ul,
+.prose-note p + ol,
+.prose-note p + blockquote,
+.prose-note p + pre,
+.prose-note p + hr,
+.prose-note ul + p,
+.prose-note ul + ul,
+.prose-note ul + ol,
+.prose-note ul + blockquote,
+.prose-note ul + pre,
+.prose-note ul + hr,
+.prose-note ol + p,
+.prose-note ol + ul,
+.prose-note ol + ol,
+.prose-note ol + blockquote,
+.prose-note ol + pre,
+.prose-note ol + hr,
+.prose-note blockquote + p,
+.prose-note blockquote + ul,
+.prose-note blockquote + ol,
+.prose-note pre + p,
+.prose-note pre + ul,
+.prose-note pre + ol,
+.prose-note hr + p,
+.prose-note hr + ul,
+.prose-note hr + ol {
+  margin-top: 1em;
+}
+
+/* Headings: generous top margin so sections feel distinct, modest bottom
+   margin so the heading breathes from the body that follows. The :first-child
+   override prevents an awkward leading gap when a note opens with a heading. */
 .prose-note h1 {
   font-family: var(--font-serif);
   font-size: 2rem;
   line-height: 1.2;
   font-weight: 600;
-  margin-top: 1.4em;
+  margin-top: 1.8em;
+  margin-bottom: 0.5em;
 }
 .prose-note h2 {
   font-family: var(--font-serif);
   font-size: 1.5rem;
   line-height: 1.25;
   font-weight: 600;
-  margin-top: 1.3em;
+  margin-top: 1.6em;
+  margin-bottom: 0.4em;
 }
 .prose-note h3 {
   font-size: 1.2rem;
   line-height: 1.3;
   font-weight: 600;
-  margin-top: 1.2em;
+  margin-top: 1.4em;
+  margin-bottom: 0.35em;
 }
 .prose-note h4 {
   font-size: 1.05rem;
   line-height: 1.35;
   font-weight: 600;
-  margin-top: 1.1em;
+  margin-top: 1.2em;
+  margin-bottom: 0.3em;
 }
-.prose-note p { margin: 0; }
+.prose-note > :first-child {
+  margin-top: 0;
+}
+
 .prose-note ul,
 .prose-note ol {
   padding-left: 1.5em;
@@ -339,7 +388,7 @@ select {
 .prose-note ol { list-style: decimal; }
 .prose-note ul li,
 .prose-note ol li { padding-left: 0.25em; }
-.prose-note li + li { margin-top: 0.25em; }
+.prose-note li + li { margin-top: 0.3em; }
 .prose-note blockquote {
   border-left: 3px solid var(--color-line);
   padding-left: 1em;
@@ -368,7 +417,7 @@ select {
 .prose-note hr {
   border: none;
   border-top: 1px solid var(--color-line);
-  margin: 1.5em 0;
+  margin: 1.6em 0;
 }
 .prose-note strong { font-weight: 600; }
 .prose-note em { font-style: italic; }
