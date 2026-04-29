@@ -557,7 +557,7 @@ function DiarizeModelManager({
   return (
     <div className="flex flex-col gap-2">
       <div className="text-sm">
-        Not downloaded. The model is ~500 MB. First-time setup also compiles
+        Not downloaded. The model is ~15 MB. First-time setup also compiles
         for the Apple Neural Engine, which takes 20-30 s.
       </div>
       <div className="flex gap-2">

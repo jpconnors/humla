@@ -597,6 +597,29 @@ resumeSrc.setEventHandler { resumeCapture() }
 pauseSrc.resume()
 resumeSrc.resume()
 
+// MARK: - Parent-death watchdog
+//
+// We `setsid()` from the Rust side so this sidecar gets its own session
+// (necessary for TCC permissions to bind to the *sidecar's* binary identity
+// rather than the parent's). A side effect of detached sessions is that the
+// process survives parent death — the launching app crashing, a `pnpm tauri
+// dev` reload, or a force-quit leaves an orphan running indefinitely. macOS
+// will reparent it to launchd (PID 1) in those cases.
+//
+// Poll PPID every 2 s. If we see PID 1 as our parent, the launcher is gone
+// and we should exit so the next launch starts cleanly without a zombie
+// sidecar holding onto the mic.
+let originalParentPid = getppid()
+let parentWatchdog = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "parent.watchdog"))
+parentWatchdog.schedule(deadline: .now() + 2, repeating: 2)
+parentWatchdog.setEventHandler {
+    let current = getppid()
+    if current == 1 || (originalParentPid != 1 && current != originalParentPid) {
+        exit(0)
+    }
+}
+parentWatchdog.resume()
+
 // MARK: - Signal handling: SIGTERM / SIGINT → finalize
 
 let sigSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
@@ -623,18 +646,19 @@ let shutdown: () -> Void = {
                 writer.write(buf)
                 fullWriter.write(buf)
             }
-            // Order matters: close ChunkWriter first so its final chunk
-            // event lands before the full_recording event. The Rust reader
-            // uses the latter as a signal that no more chunk events are
-            // coming.
-            writer.close()
+            // Order matters: emit `full_recording` BEFORE `stopped` so the
+            // Rust reader sees the full WAV path before its loop breaks
+            // out on `stopped`. ChunkWriter.close() emits the final chunk
+            // (if any) AND `stopped` in one atomic step, so it must come
+            // last.
             fullWriter.close()
+            writer.close()
             exit(0)
         }
     } else {
         engine.stop()
-        writer.close()
         fullWriter.close()
+        writer.close()
         exit(0)
     }
 }

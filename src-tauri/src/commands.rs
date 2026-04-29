@@ -403,28 +403,49 @@ pub async fn recording_start(
     state: State<'_, AppState>,
     note_id: String,
 ) -> Result<(), String> {
-    {
+    // Self-heal stale sessions before refusing. We get here when the
+    // session struct still has note_id set — could be a real recording
+    // in progress, or a zombie left behind by a dev reload / app crash
+    // that didn't flow through recording_stop.
+    //
+    // - If the tracked child has already exited → pure garbage, clear it.
+    // - If the child is still running but its reader handle is gone (the
+    //   stdout pipe was closed without recording_stop running) → orphan,
+    //   SIGTERM it and take over.
+    // - Only when both child AND reader are alive do we treat it as a
+    //   genuine concurrent recording and refuse.
+    let stale_child: Option<tokio::process::Child> = {
         let mut s = state.recording.lock();
         if s.note_id.is_some() {
-            // If the child has exited (sidecar crashed without emitting
-            // Stopped), the session is stale. Reset and continue rather
-            // than pinning the user in "already recording" forever.
-            let dead = match s.child.as_mut() {
+            let child_dead = match s.child.as_mut() {
                 Some(c) => matches!(c.try_wait(), Ok(Some(_)) | Err(_)),
                 None => true,
             };
-            if !dead {
+            let reader_dead = s.reader.as_ref().map_or(true, |r| r.is_finished());
+
+            if !child_dead && !reader_dead {
                 return Err("already recording".into());
             }
-            // Stale — clear it. Inflight handles + reader from the dead
-            // session are abandoned (their tasks will exit on their own
-            // when the closed pipe yields EOF).
+
+            let stale = s.child.take();
             s.note_id = None;
-            s.child = None;
             s.temp_dir = None;
             s.reader = None;
             s.inflight = Arc::new(parking_lot::Mutex::new(Vec::new()));
+            stale
+        } else {
+            None
         }
+    };
+    if let Some(mut c) = stale_child {
+        if let Some(pid) = c.id() {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), c.wait()).await;
+        let _ = c.kill().await;
     }
 
     // Pre-check the configured provider's prerequisites — without them

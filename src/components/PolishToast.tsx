@@ -29,7 +29,7 @@ function messageForPhase(phase: string): { title: string; subtitle: string } | n
   if (phase === "diarizing") {
     return {
       title: "Identifying speakers…",
-      subtitle: "First run downloads a 500 MB model — can take 30 s.",
+      subtitle: "Running the diarization model.",
     };
   }
   if (phase === "polishing") {
