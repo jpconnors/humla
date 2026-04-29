@@ -60,12 +60,15 @@ export function Note() {
   const isPaused = isThisNoteActive && recPhase.phase === "paused";
   const isStarting = isThisNoteActive && recPhase.phase === "starting";
   const isStopping = isThisNoteActive && recPhase.phase === "stopping";
+  const isPolishing = isThisNoteActive && recPhase.phase === "polishing";
   const isSummarizing = isThisNoteActive && recPhase.phase === "summarizing";
 
   // Always pull summary updates from the store. Pull transcript updates only
-  // while a recording is in flight for this note — otherwise our debounced
-  // save round-trips through the store and clobbers in-progress edits.
-  const allowTranscriptSync = isRecording || isPaused || isStarting || isStopping;
+  // while a recording or polish is in flight — otherwise our debounced save
+  // round-trips through the store and clobbers in-progress edits. Polish
+  // qualifies because it replaces the transcript wholesale and we want the
+  // editor to reflect that immediately.
+  const allowTranscriptSync = isRecording || isPaused || isStarting || isStopping || isPolishing;
   useEffect(() => {
     if (!note || !draft || note.id !== draft.id) return;
     setDraft((d) => {
@@ -196,7 +199,7 @@ export function Note() {
                 <TranscriptEditor
                   value={draft.transcript}
                   onChange={(v) => patch("transcript", v)}
-                  disabled={isRecording || isPaused || isStarting || isStopping}
+                  disabled={isRecording || isPaused || isStarting || isStopping || isPolishing}
                 />
                 {isRecording && <SkeletonLines lines={2} className="mt-3" />}
               </>

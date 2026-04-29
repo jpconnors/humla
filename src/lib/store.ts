@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { ipc, onRecordingDiagnostic, onRecordingError, onRecordingStatus, onSummary, onTranscript, type Folder, type Note, type RecordingDiagnostic, type RecordingStatus } from "./ipc";
+import { ipc, onRecordingDiagnostic, onRecordingError, onRecordingStatus, onSummary, onTranscript, onTranscriptReplaced, type Folder, type Note, type RecordingDiagnostic, type RecordingStatus } from "./ipc";
 
 type NotesState = {
   notes: Note[];
@@ -10,6 +10,7 @@ type NotesState = {
   upsertFolder: (folder: Folder) => void;
   removeFolder: (id: string) => void;
   appendTranscript: (id: string, text: string) => void;
+  replaceTranscript: (id: string, text: string) => void;
   setSummary: (id: string, summary: string) => void;
   removeLocal: (id: string) => void;
 };
@@ -52,6 +53,10 @@ export const useNotesStore = create<NotesState>((set) => ({
       notes: s.notes.map((n) =>
         n.id === id ? { ...n, transcript: (n.transcript ? n.transcript + " " : "") + text } : n
       ),
+    })),
+  replaceTranscript: (id, text) =>
+    set((s) => ({
+      notes: s.notes.map((n) => (n.id === id ? { ...n, transcript: text } : n)),
     })),
   setSummary: (id, summary) =>
     set((s) => ({ notes: s.notes.map((n) => (n.id === id ? { ...n, summary } : n)) })),
@@ -96,6 +101,7 @@ export function bindBackendListeners() {
   if (listenersBound) return;
   listenersBound = true;
   onTranscript(({ noteId, text }) => useNotesStore.getState().appendTranscript(noteId, text));
+  onTranscriptReplaced(({ noteId, text }) => useNotesStore.getState().replaceTranscript(noteId, text));
   onSummary(({ noteId, summary }) => useNotesStore.getState().setSummary(noteId, summary));
   onRecordingStatus((s) => {
     useRecordingStore.getState().setStatus(s);

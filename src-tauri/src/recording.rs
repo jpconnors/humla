@@ -89,6 +89,7 @@ pub enum Phase {
     Recording,
     Paused,
     Stopping,
+    Polishing,
     Summarizing,
 }
 

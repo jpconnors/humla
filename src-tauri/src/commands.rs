@@ -18,6 +18,27 @@ const DEFAULT_TRANSCRIBE_PROVIDER: &str = "openai";
 const DEFAULT_TRANSCRIBE_MODEL: &str = "whisper-1";
 const DEFAULT_WHISPER_PRESET: &str = "quality";
 const DEFAULT_SUMMARY_MODEL: &str = "gpt-5.4-mini";
+const DEFAULT_POLISH_PROMPT: &str = "You are polishing a raw speech-to-text transcript produced by Whisper. The transcript is approximately correct but contains typos, missing punctuation, words cut at chunk boundaries, and minor mishearings of common words and proper nouns.
+
+Your job is to produce a clean version that reads naturally while staying faithful to what was actually said.
+
+Rules — apply:
+- Fix typos and reconstruct words that were cut at chunk boundaries when context strongly supports the correction.
+- Restore punctuation, capitalization, and paragraph breaks based on speech rhythm and topic shifts.
+- Use the user's notes (when provided) as context for the meeting topic, proper nouns, and domain terminology.
+- Use the custom vocabulary (when provided) to spell names and technical terms correctly.
+- Remove obvious filler ('uh', 'um', 'eh', 'liksom', 'ikke sant') only when they don't carry meaning.
+
+Forbidden — never:
+- Add factual content, numbers, names, or claims that are not present in the raw transcript.
+- Remove substantive content or rephrase sentences in ways that change meaning.
+- Translate the transcript or change its language — preserve the input language exactly.
+- Add formatting (no headings, no bullet lists, no markdown).
+- Soften or 'improve' the speaker's actual phrasing — preserve their voice.
+
+If you are uncertain whether a word is a mishearing, leave it as-is. The user can edit further; you should not invent.
+
+Output ONLY the corrected transcript text as continuous prose. No commentary, no preamble, no formatting markers.";
 const DEFAULT_SUMMARY_PROMPT: &str = "Du lager møtenotater fra en automatisk transkribert samtale.\n\nKilder du får:\n- [Notater] — det brukeren skrev under møtet (autoritativ kilde for navn, tall og beslutninger).\n- [Transkripsjon] — automatisk generert fra lyden, kan inneholde feil.\n\nNår transkripsjon og notater er i konflikt, stol på notatene.\n\nSkriv på norsk i Markdown. Inkluder kun seksjoner som er reelt relevante — ikke skriv \"Ingen identifisert\".\n\n- **Sammendrag** — 2–4 setninger som fanger essensen.\n- **Beslutninger** — kun reelle beslutninger som ble tatt.\n- **Handlingspunkter** — på formen \"Beskrivelse — Ansvarlig (frist når oppgitt)\".\n- **Åpne spørsmål** — uavklarte ting som krever oppfølging.\n\nVær konkret og kort. Ikke gjenta deg selv. Ikke finn på detaljer som ikke står i kilden.";
 const API_KEY: &str = "__openai_api_key__";
 
@@ -638,7 +659,24 @@ pub async fn recording_stop(
     };
     let _ = tokio::time::timeout(std::time::Duration::from_secs(30), drain).await;
 
-    emit_status(&app, None, Phase::Idle);
+    // Spawn the polish pass in the background. It owns its own status
+    // transitions (Polishing → Idle) so the UI gets a single coherent
+    // state stream from Stopping → Polishing → Idle. Polish silently
+    // skips when there's no transcript or no API key, in which case we
+    // still settle to Idle here.
+    let app_for_polish = app.clone();
+    let note_for_polish = note_id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = polish_transcript(app_for_polish.clone(), note_for_polish.clone()).await {
+            eprintln!("polish_transcript: {e}");
+            emit_error(
+                &app_for_polish,
+                Some(&note_for_polish),
+                &format!("Polish failed: {e}"),
+            );
+        }
+        emit_status(&app_for_polish, None, Phase::Idle);
+    });
 
     if let Some(dir) = temp_dir {
         // Best-effort cleanup later; keep until summary is in the DB.
@@ -809,6 +847,87 @@ pub async fn summarize_note(app: AppHandle, note_id: String) -> Result<(), Strin
     let result = run_summary(app.clone(), note_id.clone()).await;
     emit_status(&app, None, Phase::Idle);
     result.map_err(|e| e.to_string())
+}
+
+// Polish a freshly-recorded transcript via a chat-completion pass. Whisper's
+// raw output is usually correct in substance but littered with typos,
+// chunk-boundary mid-word cuts ("mistenkte" → "mistred"), and missing
+// punctuation. The user's notes + custom vocabulary are passed as context so
+// the model spells proper nouns and domain terms correctly.
+//
+// Skips silently when there's no transcript, no OpenAI API key, or the
+// transcript was modified between the snapshot read and the polished write
+// (the user started another recording on the same note while polish was in
+// flight) — the latter check prevents losing freshly-appended chunks.
+async fn polish_transcript(app: AppHandle, note_id: String) -> anyhow::Result<()> {
+    let (api_key, model, transcript_snapshot, body, vocabulary) = {
+        let state: State<AppState> = app.state();
+        let conn = state.db.lock();
+        let key = match db::get_setting(&conn, API_KEY)? {
+            Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+            _ => return Ok(()), // no key → silently skip
+        };
+        let m = db::get_setting(&conn, "summary_model")?
+            .unwrap_or_else(|| DEFAULT_SUMMARY_MODEL.to_string());
+        let n = db::get_note(&conn, &note_id)?;
+        if n.transcript.trim().is_empty() {
+            return Ok(()); // nothing to polish
+        }
+        let vocab = db::get_setting(&conn, "custom_vocabulary")?.unwrap_or_default();
+        (key, m, n.transcript.clone(), n.body.clone(), vocab)
+    };
+
+    emit_status(&app, Some(&note_id), Phase::Polishing);
+
+    let body_text = html_to_text(&body);
+    let vocab_section = if vocabulary.trim().is_empty() {
+        String::new()
+    } else {
+        format!("[Vocabulary]\n{}\n\n", vocabulary.trim())
+    };
+    let notes_section = if body_text.trim().is_empty() {
+        String::new()
+    } else {
+        format!("[Notes]\n{}\n\n", body_text.trim())
+    };
+    let user_message =
+        format!("{vocab_section}{notes_section}[Raw transcript]\n{transcript_snapshot}");
+
+    let polished = openai::summarize(&api_key, &model, DEFAULT_POLISH_PROMPT, &user_message).await?;
+    let polished = polished.trim().to_string();
+    if polished.is_empty() {
+        return Ok(());
+    }
+
+    // Concurrency guard: if the transcript changed under us (user started a
+    // new recording on the same note before polish finished), keep their
+    // raw additions instead of clobbering with the snapshot's polished
+    // version.
+    {
+        let state: State<AppState> = app.state();
+        let conn = state.db.lock();
+        let current = db::get_note(&conn, &note_id)?;
+        if current.transcript != transcript_snapshot {
+            return Ok(());
+        }
+        db::update_note(
+            &conn,
+            &note_id,
+            &NotePatch {
+                transcript: Some(polished.clone()),
+                ..Default::default()
+            },
+        )?;
+    }
+
+    let _ = app.emit(
+        "transcript_replaced",
+        TranscriptPayload {
+            note_id,
+            text: polished,
+        },
+    );
+    Ok(())
 }
 
 async fn run_summary(app: AppHandle, note_id: String) -> anyhow::Result<()> {

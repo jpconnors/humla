@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { Toaster } from "./Toaster";
 import { Updater } from "./Updater";
+import { PolishToast } from "./PolishToast";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { bindBackendListeners } from "../lib/store";
 import { cn } from "../lib/cn";
@@ -49,6 +50,7 @@ export function Layout() {
       </main>
       <Toaster />
       <Updater />
+      <PolishToast />
     </div>
   );
 }

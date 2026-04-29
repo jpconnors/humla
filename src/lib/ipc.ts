@@ -99,7 +99,7 @@ export type PermissionsStatus = {
 
 export type TranscriptEvent = { noteId: string; text: string };
 export type SummaryEvent = { noteId: string; summary: string };
-export type RecordingPhase = "idle" | "starting" | "recording" | "paused" | "stopping" | "summarizing";
+export type RecordingPhase = "idle" | "starting" | "recording" | "paused" | "stopping" | "polishing" | "summarizing";
 export type RecordingStatus = { noteId: string | null; phase: RecordingPhase };
 export type RecordingError = { noteId: string | null; message: string };
 export type RecordingDiagnostic = {
@@ -113,6 +113,9 @@ export type RecordingDiagnostic = {
 
 export function onTranscript(cb: (e: TranscriptEvent) => void): Promise<UnlistenFn> {
   return listen<TranscriptEvent>("transcript_appended", (e) => cb(e.payload));
+}
+export function onTranscriptReplaced(cb: (e: TranscriptEvent) => void): Promise<UnlistenFn> {
+  return listen<TranscriptEvent>("transcript_replaced", (e) => cb(e.payload));
 }
 export function onSummary(cb: (e: SummaryEvent) => void): Promise<UnlistenFn> {
   return listen<SummaryEvent>("summary_ready", (e) => cb(e.payload));
