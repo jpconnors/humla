@@ -198,6 +198,12 @@ export function Note() {
             </h2>
             {hasTranscript ? (
               <>
+                <SpeakerLabels
+                  transcript={draft.transcript}
+                  onRename={(oldLabel, newLabel) =>
+                    patch("transcript", renameSpeakerInTranscript(draft.transcript, oldLabel, newLabel))
+                  }
+                />
                 <TranscriptEditor
                   value={draft.transcript}
                   onChange={(v) => patch("transcript", v)}
@@ -362,6 +368,120 @@ function Card({ children, className = "" }: { children: React.ReactNode; classNa
     >
       {children}
     </section>
+  );
+}
+
+// Parse the transcript for speaker turn prefixes — any line starting with
+// `<label>: ` (label can be any non-colon text) is treated as a speaker
+// turn. Returns labels in first-encounter order, deduplicated.
+function extractSpeakerLabels(transcript: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const rawLine of transcript.split("\n")) {
+    const line = rawLine.trimStart();
+    const match = line.match(/^([^:]{1,40}):\s/);
+    if (match) {
+      const label = match[1].trim();
+      if (!seen.has(label)) {
+        seen.add(label);
+        result.push(label);
+      }
+    }
+  }
+  return result;
+}
+
+// Rewrite the transcript so every "<oldLabel>: " line start becomes
+// "<newLabel>: ". Anchored to line starts via a multi-line regex; bare
+// occurrences of the label inside text are left alone. Escapes regex
+// metacharacters in oldLabel so renaming to/from values like "Speaker 1?"
+// doesn't break.
+function renameSpeakerInTranscript(transcript: string, oldLabel: string, newLabel: string): string {
+  if (oldLabel === newLabel) return transcript;
+  const escaped = oldLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^(\\s*)${escaped}: `, "gm");
+  return transcript.replace(re, `$1${newLabel}: `);
+}
+
+function SpeakerLabels({
+  transcript,
+  onRename,
+}: {
+  transcript: string;
+  onRename: (oldLabel: string, newLabel: string) => void;
+}) {
+  const labels = useMemo(() => extractSpeakerLabels(transcript), [transcript]);
+  // Only render the strip when there are 2+ unique speakers — solo
+  // monologues don't need management UI.
+  if (labels.length < 2) return null;
+  return (
+    <div className="flex flex-wrap gap-2 mb-4">
+      {labels.map((label) => (
+        <SpeakerChip key={label} label={label} onRename={(next) => onRename(label, next)} />
+      ))}
+    </div>
+  );
+}
+
+function SpeakerChip({ label, onRename }: { label: string; onRename: (next: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(label);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Snap the draft back to the canonical label whenever the underlying
+  // label changes (e.g. polish replaced the transcript and our label was
+  // re-derived).
+  useEffect(() => {
+    setDraft(label);
+  }, [label]);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  function commit() {
+    setEditing(false);
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === label) {
+      setDraft(label);
+      return;
+    }
+    onRename(trimmed);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            setDraft(label);
+            setEditing(false);
+          }
+        }}
+        className="nd-chip cursor-text bg-[var(--color-input-bg)] outline-none focus:border-[var(--color-text)]"
+        style={{ fontFamily: "var(--font-mono)", minWidth: "8ch" }}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      title="Click to rename — applies to every turn from this speaker"
+      className="nd-chip cursor-pointer hover:border-[var(--color-text)]"
+      style={{ fontFamily: "var(--font-mono)" }}
+    >
+      {label}
+    </button>
   );
 }
 
