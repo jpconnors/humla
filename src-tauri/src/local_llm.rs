@@ -4,10 +4,14 @@
 // model loading lands in a follow-up task.
 
 use anyhow::{anyhow, Result};
+use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::LlamaModel;
+use llama_cpp_2::model::{AddBos, LlamaModel, Special};
+use llama_cpp_2::sampling::LlamaSampler;
 use parking_lot::Mutex;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -147,6 +151,99 @@ pub async fn prewarm(shared: SharedContext, kind: ModelKind, model_path: PathBuf
     .map_err(|e| anyhow!("prewarm task: {e}"))?
 }
 
+// Gemma uses a control-token chat template: <start_of_turn>user\n...<end_of_turn>
+// followed by <start_of_turn>model\n. There's no real "system" role — convention
+// is to prepend the system content to the first user turn. AddBos::Always lets
+// the tokenizer add the model's BOS marker before our first control token.
+fn format_gemma_prompt(system: &str, user: &str) -> String {
+    let user_with_system = if system.is_empty() {
+        user.to_string()
+    } else {
+        format!("{system}\n\n{user}")
+    };
+    format!("<start_of_turn>user\n{user_with_system}<end_of_turn>\n<start_of_turn>model\n")
+}
+
+// Run inference. Loads the model on first call (slow), then generates up to
+// `max_tokens` from the chat-formatted prompt. Greedy decoding at temp 0.2 —
+// summary/polish work, not creative writing, so determinism beats variety.
+pub async fn generate(
+    shared: SharedContext,
+    kind: ModelKind,
+    model_path: PathBuf,
+    system: String,
+    user: String,
+    max_tokens: usize,
+) -> Result<String> {
+    tokio::task::spawn_blocking(move || -> Result<String> {
+        let model = ensure_loaded(&shared, &kind, &model_path)?;
+        let prompt = format_gemma_prompt(&system, &user);
+
+        // 8K is enough for ~6K input + 2K output. Bumping past the model's
+        // trained context (Gemma 4 supports 128K) costs RAM linearly without
+        // a quality win for our short-form polish/summary tasks.
+        let n_ctx: u32 = 8192;
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx));
+        let mut ctx = model
+            .new_context(backend(), ctx_params)
+            .map_err(|e| anyhow!("create llama context: {e}"))?;
+
+        let tokens = model
+            .str_to_token(&prompt, AddBos::Always)
+            .map_err(|e| anyhow!("tokenize: {e}"))?;
+        let prompt_len = tokens.len();
+        // Leave a 512-token buffer for generation; if the prompt is bigger than
+        // that, the user has fed us a transcript longer than the context window.
+        if prompt_len + 512 >= n_ctx as usize {
+            return Err(anyhow!(
+                "prompt too long: {prompt_len} tokens (limit {} with generation buffer)",
+                n_ctx as usize - 512
+            ));
+        }
+
+        let mut batch = LlamaBatch::new(n_ctx as usize, 1);
+        let last_idx = prompt_len - 1;
+        for (i, tok) in tokens.iter().enumerate() {
+            batch
+                .add(*tok, i as i32, &[0], i == last_idx)
+                .map_err(|e| anyhow!("batch add: {e}"))?;
+        }
+        ctx.decode(&mut batch)
+            .map_err(|e| anyhow!("decode prompt: {e}"))?;
+
+        let mut sampler = LlamaSampler::chain_simple([
+            LlamaSampler::temp(0.2),
+            LlamaSampler::greedy(),
+        ]);
+
+        let mut out = String::new();
+        let mut n_cur = prompt_len as i32;
+        let mut produced = 0usize;
+        while produced < max_tokens {
+            let new_tok = sampler.sample(&ctx, batch.n_tokens() - 1);
+            sampler.accept(new_tok);
+            if model.is_eog_token(new_tok) {
+                break;
+            }
+            let frag = model
+                .token_to_str(new_tok, Special::Tokenize)
+                .map_err(|e| anyhow!("detokenize: {e}"))?;
+            out.push_str(&frag);
+            batch.clear();
+            batch
+                .add(new_tok, n_cur, &[0], true)
+                .map_err(|e| anyhow!("batch add gen: {e}"))?;
+            ctx.decode(&mut batch)
+                .map_err(|e| anyhow!("decode gen: {e}"))?;
+            n_cur += 1;
+            produced += 1;
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| anyhow!("generate task: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +283,19 @@ mod tests {
         let custom = PathBuf::from("/elsewhere/model.gguf");
         let p = resolve_path(&ModelKind::Custom(custom.clone()), &base);
         assert_eq!(p, custom);
+    }
+
+    #[test]
+    fn formats_with_system() {
+        let p = format_gemma_prompt("you are helpful", "hi");
+        assert!(p.contains("<start_of_turn>user\nyou are helpful\n\nhi<end_of_turn>"));
+        assert!(p.ends_with("<start_of_turn>model\n"));
+    }
+
+    #[test]
+    fn formats_without_system() {
+        let p = format_gemma_prompt("", "hi");
+        assert!(p.contains("<start_of_turn>user\nhi<end_of_turn>"));
+        assert!(!p.contains("\n\nhi"));
     }
 }
