@@ -25,14 +25,12 @@ export type SettingsKey =
   | "language"
   | "transcribe_provider"
   | "transcribe_model"
-  | "speechmatics_operating_point"
-  | "speechmatics_region"
   | "custom_vocabulary"
   | "summary_model"
   | "summary_prompt"
   | "theme";
 
-export type TranscribeProvider = "openai" | "speechmatics" | "local";
+export type TranscribeProvider = "openai" | "local";
 
 export type LocalWhisperStatus = {
   downloaded: boolean;
@@ -64,11 +62,6 @@ export const ipc = {
   getApiKey: () => invoke<string | null>("api_key_get"),
   setApiKey: (key: string) => invoke<void>("api_key_set", { key }),
   testApiKey: () => invoke<{ ok: boolean; status: number; error: string | null }>("api_key_test"),
-
-  getSpeechmaticsKey: () => invoke<string | null>("speechmatics_api_key_get"),
-  setSpeechmaticsKey: (key: string) => invoke<void>("speechmatics_api_key_set", { key }),
-  testSpeechmaticsKey: () =>
-    invoke<{ ok: boolean; status: number; error: string | null }>("speechmatics_api_key_test"),
 
   localWhisperStatus: () =>
     invoke<LocalWhisperStatus>("local_whisper_status"),

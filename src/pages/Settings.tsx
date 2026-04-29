@@ -19,8 +19,6 @@ const DEFAULTS: Record<EditableKey, string> = {
   language: "no",
   transcribe_provider: "openai",
   transcribe_model: "whisper-1",
-  speechmatics_operating_point: "enhanced",
-  speechmatics_region: "eu1",
   custom_vocabulary: "",
   summary_model: "gpt-5.4-mini",
   summary_prompt: SUMMARY_PRESETS[0].prompt_no,
@@ -28,22 +26,8 @@ const DEFAULTS: Record<EditableKey, string> = {
 
 const PROVIDERS_BASE = [
   { value: "openai", label: "OpenAI" },
-  { value: "speechmatics", label: "Speechmatics" },
 ];
 const LOCAL_PROVIDER = { value: "local", label: "Local (Whisper turbo, on-device)" };
-
-const SPEECHMATICS_OPS = [
-  { value: "enhanced", label: "Enhanced (higher accuracy)" },
-  { value: "standard", label: "Standard (faster)" },
-];
-
-const SPEECHMATICS_REGIONS = [
-  { value: "eu1", label: "EU1 (Europe, self-serve)" },
-  { value: "eu2", label: "EU2 (Europe, Enterprise)" },
-  { value: "us1", label: "US1 (USA, self-serve)" },
-  { value: "us2", label: "US2 (USA, Enterprise)" },
-  { value: "au1", label: "AU1 (Australia)" },
-];
 
 const THEMES: { value: Theme; label: string }[] = [
   { value: "system", label: "System" },
@@ -79,7 +63,7 @@ const SUMMARY_MODELS = [
 const inputClass =
   "w-full px-3 py-2 rounded-md text-sm bg-[var(--color-input-bg)] border border-[var(--color-line)] focus:border-[var(--color-text-muted)]";
 
-type Provider = "openai" | "speechmatics" | "local";
+type Provider = "openai" | "local";
 type KeyState = {
   draft: string;
   hasKey: boolean;
@@ -107,7 +91,6 @@ const EMPTY_LOCAL_STATE: LocalState = {
 
 export function Settings() {
   const [openaiKey, setOpenaiKey] = useState<KeyState>(EMPTY_KEY_STATE);
-  const [smKey, setSmKey] = useState<KeyState>(EMPTY_KEY_STATE);
   const [local, setLocal] = useState<LocalState>(EMPTY_LOCAL_STATE);
   const [s, setS] = useState<Record<EditableKey, string>>(DEFAULTS);
   const theme = useThemeStore((t) => t.theme);
@@ -115,13 +98,11 @@ export function Settings() {
 
   useEffect(() => {
     (async () => {
-      const [k1, k2, lw] = await Promise.all([
+      const [k1, lw] = await Promise.all([
         ipc.getApiKey(),
-        ipc.getSpeechmaticsKey(),
         ipc.localWhisperStatus(),
       ]);
       setOpenaiKey((p) => ({ ...p, hasKey: !!k1 }));
-      setSmKey((p) => ({ ...p, hasKey: !!k2 }));
       setLocal((p) => ({ ...p, status: lw }));
       const entries = await Promise.all(
         (Object.keys(DEFAULTS) as EditableKey[]).map(async (key) => [key, (await ipc.getSetting(key)) ?? DEFAULTS[key]] as const)
@@ -165,26 +146,22 @@ export function Settings() {
     await ipc.setSetting(key, value);
   }
 
-  async function saveKey(provider: Provider) {
-    const setter = provider === "openai" ? setOpenaiKey : setSmKey;
-    const state = provider === "openai" ? openaiKey : smKey;
-    if (!state.draft.trim()) return;
-    if (provider === "openai") await ipc.setApiKey(state.draft.trim());
-    else await ipc.setSpeechmaticsKey(state.draft.trim());
-    setter({ draft: "", hasKey: true, testing: false, result: null });
+  async function saveKey() {
+    if (!openaiKey.draft.trim()) return;
+    await ipc.setApiKey(openaiKey.draft.trim());
+    setOpenaiKey({ draft: "", hasKey: true, testing: false, result: null });
   }
 
-  async function testKey(provider: Provider) {
-    const setter = provider === "openai" ? setOpenaiKey : setSmKey;
-    setter((p) => ({ ...p, testing: true }));
+  async function testKey() {
+    setOpenaiKey((p) => ({ ...p, testing: true }));
     try {
-      const r = provider === "openai" ? await ipc.testApiKey() : await ipc.testSpeechmaticsKey();
+      const r = await ipc.testApiKey();
       const result = r.ok
         ? ({ ok: true } as const)
         : ({ ok: false, message: `${r.status}: ${r.error ?? "unknown error"}` } as const);
-      setter((p) => ({ ...p, testing: false, result }));
+      setOpenaiKey((p) => ({ ...p, testing: false, result }));
     } catch (e) {
-      setter((p) => ({ ...p, testing: false, result: { ok: false, message: String(e) } }));
+      setOpenaiKey((p) => ({ ...p, testing: false, result: { ok: false, message: String(e) } }));
     }
   }
 
@@ -226,17 +203,8 @@ export function Settings() {
               state={openaiKey}
               setState={setOpenaiKey}
               placeholder="sk-…"
-              onSave={() => saveKey("openai")}
-              onTest={() => testKey("openai")}
-            />
-          </Row>
-          <Row label="Speechmatics">
-            <ApiKeyField
-              state={smKey}
-              setState={setSmKey}
-              placeholder="Speechmatics API key"
-              onSave={() => saveKey("speechmatics")}
-              onTest={() => testKey("speechmatics")}
+              onSave={saveKey}
+              onTest={testKey}
             />
           </Row>
         </Section>
@@ -278,32 +246,6 @@ export function Settings() {
               )}
             </Row>
           )}
-          {provider === "speechmatics" && (
-            <>
-              <Row label="Region">
-                <Select
-                  value={s.speechmatics_region}
-                  onChange={(v) => update("speechmatics_region", v)}
-                  options={SPEECHMATICS_REGIONS}
-                />
-                <p className="text-xs text-[var(--color-text-muted)] mt-2">
-                  A key from one region returns 401 on another. Self-serve keys
-                  are typically EU1; check your Speechmatics portal if unsure.
-                </p>
-              </Row>
-              <Row label="Operating point">
-                <Select
-                  value={s.speechmatics_operating_point}
-                  onChange={(v) => update("speechmatics_operating_point", v)}
-                  options={SPEECHMATICS_OPS}
-                />
-                <p className="text-xs text-[var(--color-text-muted)] mt-2">
-                  Speechmatics processes each chunk as a batch job (submit → poll →
-                  fetch). Expect a few seconds of extra latency vs. OpenAI.
-                </p>
-              </Row>
-            </>
-          )}
           <Row label="Local model">
             <LocalModelManager
               state={local}
@@ -316,15 +258,13 @@ export function Settings() {
               value={s.custom_vocabulary}
               onChange={(e) => update("custom_vocabulary", e.target.value)}
               rows={3}
-              placeholder="Speechmatics, Tauri, Humla, ScreenCaptureKit, Granola"
+              placeholder="Tauri, Humla, ScreenCaptureKit, Granola"
               className={inputClass + " leading-relaxed"}
               style={{ fontFamily: "var(--font-mono)" }}
             />
             <p className="text-xs text-[var(--color-text-muted)] mt-2">
               Comma- or newline-separated. Names, jargon, and uncommon
-              spellings — biases the transcriber toward these tokens. Sent as
-              a free-text prompt to OpenAI / local Whisper, and as
-              <code> additional_vocab </code> to Speechmatics.
+              spellings — biases the transcriber toward these tokens.
               <code> gpt-4o-transcribe-diarize </code> ignores it.
             </p>
           </Row>
