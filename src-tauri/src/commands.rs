@@ -1,6 +1,5 @@
 use crate::db::{self, Note, NotePatch};
 use crate::openai;
-use crate::speechmatics;
 use crate::local_whisper;
 use crate::presets;
 use crate::wav;
@@ -17,12 +16,9 @@ use tokio::process::Command;
 const DEFAULT_LANGUAGE: &str = "no";
 const DEFAULT_TRANSCRIBE_PROVIDER: &str = "openai";
 const DEFAULT_TRANSCRIBE_MODEL: &str = "whisper-1";
-const DEFAULT_SPEECHMATICS_OP: &str = "enhanced";
-const DEFAULT_SPEECHMATICS_REGION: &str = "eu1";
 const DEFAULT_SUMMARY_MODEL: &str = "gpt-5.4-mini";
 const DEFAULT_SUMMARY_PROMPT: &str = "Du lager møtenotater fra en automatisk transkribert samtale.\n\nKilder du får:\n- [Notater] — det brukeren skrev under møtet (autoritativ kilde for navn, tall og beslutninger).\n- [Transkripsjon] — automatisk generert fra lyden, kan inneholde feil.\n\nNår transkripsjon og notater er i konflikt, stol på notatene.\n\nSkriv på norsk i Markdown. Inkluder kun seksjoner som er reelt relevante — ikke skriv \"Ingen identifisert\".\n\n- **Sammendrag** — 2–4 setninger som fanger essensen.\n- **Beslutninger** — kun reelle beslutninger som ble tatt.\n- **Handlingspunkter** — på formen \"Beskrivelse — Ansvarlig (frist når oppgitt)\".\n- **Åpne spørsmål** — uavklarte ting som krever oppfølging.\n\nVær konkret og kort. Ikke gjenta deg selv. Ikke finn på detaljer som ikke står i kilden.";
 const API_KEY: &str = "__openai_api_key__";
-const SPEECHMATICS_API_KEY: &str = "__speechmatics_api_key__";
 
 fn read_secret(state: &State<AppState>, key: &str) -> Result<Option<String>, String> {
     let conn = state.db.lock();
@@ -144,44 +140,6 @@ pub async fn api_key_test(state: State<'_, AppState>) -> Result<TestResult, Stri
 
     let r = openai::client()
         .get(format!("{}/models", openai::BASE))
-        .bearer_auth(&key)
-        .send()
-        .await
-        .map_err(|e| format!("network: {e}"))?;
-
-    let status = r.status();
-    if status.is_success() {
-        return Ok(TestResult { ok: true, status: status.as_u16(), error: None });
-    }
-    let body = r.text().await.unwrap_or_default();
-    let snippet: String = body.chars().take(300).collect();
-    Ok(TestResult { ok: false, status: status.as_u16(), error: Some(snippet) })
-}
-
-#[tauri::command]
-pub fn speechmatics_api_key_get(state: State<AppState>) -> Result<Option<String>, String> {
-    Ok(read_secret(&state, SPEECHMATICS_API_KEY)?.map(|_| "stored".to_string()))
-}
-
-#[tauri::command]
-pub fn speechmatics_api_key_set(state: State<AppState>, key: String) -> Result<(), String> {
-    let conn = state.db.lock();
-    db::set_setting(&conn, SPEECHMATICS_API_KEY, key.trim()).map_err(err)
-}
-
-#[tauri::command]
-pub async fn speechmatics_api_key_test(state: State<'_, AppState>) -> Result<TestResult, String> {
-    let key = read_secret(&state, SPEECHMATICS_API_KEY)?
-        .ok_or_else(|| "No Speechmatics API key stored".to_string())?;
-    let region = {
-        let conn = state.db.lock();
-        db::get_setting(&conn, "speechmatics_region")
-            .map_err(err)?
-            .unwrap_or_else(|| DEFAULT_SPEECHMATICS_REGION.to_string())
-    };
-
-    let r = speechmatics::client()
-        .get(format!("{}/jobs/", speechmatics::base_url(&region)))
         .bearer_auth(&key)
         .send()
         .await
@@ -427,9 +385,6 @@ pub async fn recording_start(
             .unwrap_or_else(|| DEFAULT_TRANSCRIBE_PROVIDER.to_string())
     };
     let pre_err = match provider.as_str() {
-        "speechmatics" => read_secret(&state, SPEECHMATICS_API_KEY)?
-            .is_none()
-            .then_some("Speechmatics API key not set. Add one in Settings → API keys."),
         "local" => {
             let p = local_model_path(&app).map_err(|e| e.to_string())?;
             (!p.exists()).then_some(
@@ -682,10 +637,6 @@ async fn transcribe_chunk(
             .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
         // Cloud providers need a key; local Whisper does not.
         let api_key = match provider.as_str() {
-            "speechmatics" => db::get_setting(&conn, SPEECHMATICS_API_KEY)?
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow::anyhow!("no Speechmatics API key"))?,
             "local" => String::new(),
             _ => db::get_setting(&conn, API_KEY)?
                 .map(|s| s.trim().to_string())
@@ -694,10 +645,6 @@ async fn transcribe_chunk(
         };
         let openai_model = db::get_setting(&conn, "transcribe_model")?
             .unwrap_or_else(|| DEFAULT_TRANSCRIBE_MODEL.to_string());
-        let speechmatics_op = db::get_setting(&conn, "speechmatics_operating_point")?
-            .unwrap_or_else(|| DEFAULT_SPEECHMATICS_OP.to_string());
-        let speechmatics_region = db::get_setting(&conn, "speechmatics_region")?
-            .unwrap_or_else(|| DEFAULT_SPEECHMATICS_REGION.to_string());
         let vocabulary = db::get_setting(&conn, "custom_vocabulary")?
             .unwrap_or_default();
         TranscribeCfg {
@@ -705,8 +652,6 @@ async fn transcribe_chunk(
             api_key,
             language,
             openai_model,
-            speechmatics_op,
-            speechmatics_region,
             vocabulary,
         }
     };
@@ -723,24 +668,12 @@ async fn transcribe_chunk(
         }
     }
 
-    // Custom vocabulary fans out to each provider in its native shape:
-    //   - OpenAI / local Whisper: free-text prompt (comma-separated names bias decoding)
-    //   - Speechmatics: structured additional_vocab list
+    // Custom vocabulary fans out as a free-text prompt — both OpenAI Whisper
+    // and on-device whisper.cpp interpret `prompt`/`initial_prompt` as a
+    // continuation hint that biases decoding toward the listed tokens.
     let vocab_prompt = vocabulary_prompt(&cfg.vocabulary);
-    let vocab_list = vocabulary_list(&cfg.vocabulary);
 
     let text = match cfg.provider.as_str() {
-        "speechmatics" => {
-            speechmatics::transcribe_file(
-                &cfg.api_key,
-                &cfg.speechmatics_region,
-                &cfg.language,
-                &cfg.speechmatics_op,
-                &vocab_list,
-                &path,
-            )
-            .await?
-        }
         "local" => {
             let model_path = local_model_path(&app).map_err(|e| anyhow::anyhow!(e))?;
             let shared = {
@@ -794,8 +727,6 @@ struct TranscribeCfg {
     api_key: String,
     language: String,
     openai_model: String,
-    speechmatics_op: String,
-    speechmatics_region: String,
     vocabulary: String,
 }
 
@@ -972,21 +903,15 @@ fn language_directive(lang: &str) -> &'static str {
 // continues from, so a comma-separated list of names/jargon biases decoding
 // toward those tokens. Returns None when the vocabulary is empty.
 fn vocabulary_prompt(raw: &str) -> Option<String> {
-    let items = vocabulary_list(raw);
+    let items: Vec<&str> = raw
+        .split(|c: char| c == ',' || c == '\n')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
     if items.is_empty() {
         return None;
     }
     Some(items.join(", "))
-}
-
-// Same vocabulary, parsed into discrete entries for Speechmatics's
-// `additional_vocab` schema. Splits on commas and newlines; trims each.
-fn vocabulary_list(raw: &str) -> Vec<String> {
-    raw.split(|c: char| c == ',' || c == '\n')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect()
 }
 
 // Whisper's training data contained millions of subtitle files, so it

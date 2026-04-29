@@ -1,6 +1,5 @@
 mod db;
 mod openai;
-mod speechmatics;
 mod local_whisper;
 mod presets;
 mod wav;
@@ -64,9 +63,6 @@ pub fn run() {
             commands::api_key_get,
             commands::api_key_set,
             commands::api_key_test,
-            commands::speechmatics_api_key_get,
-            commands::speechmatics_api_key_set,
-            commands::speechmatics_api_key_test,
             commands::local_whisper_status,
             commands::local_whisper_download,
             commands::local_whisper_delete,
