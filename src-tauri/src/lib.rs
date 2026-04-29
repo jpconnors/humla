@@ -56,8 +56,14 @@ pub fn run() {
             // the user gets speaker tags from chunk 1 of their next
             // recording instead of a 1–30 s warmup window where the early
             // chunks land unprefixed.
+            //
+            // tauri::async_runtime::spawn (NOT tokio::spawn) — the setup
+            // closure runs on the main thread before Tauri's tokio runtime
+            // is attached to it, and a bare tokio::spawn here panics with
+            // "no current Tokio runtime", which blows past the Cocoa
+            // notification FFI boundary and abort()s the app on launch.
             let app_for_prewarm = app.handle().clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 diarize::ensure_streaming_running(&app_for_prewarm, &diarize_stream).await;
             });
 
