@@ -9,10 +9,12 @@ The name is Norwegian for "bumblebee" (think: small, hum, personal).
 ## Core capabilities
 
 - **Hybrid capture** — mic input + macOS system audio (the other side of the call) recorded simultaneously via a Swift sidecar.
-- **Multi-provider transcription** — pick per-note between OpenAI (Whisper / gpt-4o-transcribe / gpt-4o-mini-transcribe / gpt-4o-transcribe-diarize), Speechmatics (multi-region), or **on-device Whisper** via Metal.
+- **Two transcription providers** — pick per-note between OpenAI (Whisper / gpt-4o-transcribe / gpt-4o-mini-transcribe / gpt-4o-transcribe-diarize) or **on-device Whisper** via Metal.
 - **Two-source summaries** — the model gets `[Notater]` (your typed notes) and `[Transkripsjon]` (the meeting transcript) as separate inputs, with a system prompt that tells it to favour your notes for intent and the transcript for facts.
 - **Per-note presets** — Meeting / 1:1 / Lecture / Interview / Brainstorm / Voice memo, each with its own summary prompt. Custom prompts also supported.
-- **Custom vocabulary** — a per-user list of names, tech terms, and phrases that fans out as a Whisper `prompt`, a local-model `initial_prompt`, and Speechmatics `additional_vocab`.
+- **Custom vocabulary** — a per-user list of names, tech terms, and phrases sent as part of Whisper's `initial_prompt` to bias decoding toward those tokens.
+- **Trailing transcript context** — every chunk's transcription receives the last ~150 committed words alongside the custom vocabulary as Whisper's `initial_prompt`, so decoding stays anchored to the conversation rather than treating each chunk as a cold start. Single biggest mitigation against silence-driven hallucinations and proper-noun drift across the meeting.
+- **VAD-bounded chunks** — the sidecar rotates each chunk at natural speech pauses (1.5–12 s, with a 600 ms silence trigger and a 12 s safety cap) instead of a fixed timer, so chunk boundaries land mid-pause rather than mid-word.
 - **Folders** — flat folder list, per-note assignment, search across titles/bodies/transcripts/folder names with auto-expand on hits.
 - **Editable transcript** — Whisper can mishear; you can correct directly in the transcript pane (edits are blocked while a recording is in flight to avoid clobber).
 - **Manual summarise button** — explicit action, not auto-fired on stop.
@@ -32,7 +34,7 @@ The name is Norwegian for "bumblebee" (think: small, hum, personal).
 │  ┌────────────────┐  ┌─────────────────┐  ┌──────────────┐  │
 │  │ SQLite (rusql) │  │ Swift sidecar   │  │ HTTPS clients│  │
 │  │ notes/folders/ │  │ (audio-capture) │  │ OpenAI       │  │
-│  │ settings       │  │ AVAudioEngine + │  │ Speechmatics │  │
+│  │ settings       │  │ AVAudioEngine + │  │              │  │
 │  │                │  │ ScreenCaptureKit│  │ HF (model dl)│  │
 │  └────────────────┘  └─────────────────┘  └──────────────┘  │
 │                                                             │
@@ -43,7 +45,7 @@ The name is Norwegian for "bumblebee" (think: small, hum, personal).
 ### Data flow during a recording
 
 1. User hits Record on a note → `recording_start` spawns the Swift sidecar via `setsid` (sandbox-detached so TCC prompts go to *Humla* itself, not Terminal).
-2. Sidecar uses `AVAudioEngine` (mic) + `ScreenCaptureKit` (system audio), writes 5-second WAV chunks to a temp dir, prints chunk paths to stdout.
+2. Sidecar uses `AVAudioEngine` (mic) + `ScreenCaptureKit` (system audio), writes VAD-bounded WAV chunks (rotated at silence pauses, 1.5–12 s) to a temp dir, prints chunk paths to stdout.
 3. Rust reader thread parses each path, fans the chunk out to the chosen transcription provider (in `tokio::spawn`'d handles tracked in `RecordingSession.inflight`).
 4. Each transcribed chunk is **filtered** (silence gate, hallucination heuristics, attribution-tail stripping), then `append_transcript`'d to SQLite and emitted to the frontend as a `transcript` event.
 5. On stop: SIGTERM the sidecar → wait 3 s → SIGKILL fallback → drain inflight handles + reader handle → emit `Idle`.
@@ -68,7 +70,7 @@ The name is Norwegian for "bumblebee" (think: small, hum, personal).
 
 - **Rust** + **Tauri 2** runtime
 - **rusqlite** (`bundled` feature) — single SQLite DB at `~/Library/Application Support/no.humla.app/`. Idempotent ALTER TABLE migrations; index creation runs *after* migrations.
-- **reqwest** with `rustls-tls` + `stream` — all HTTPS (OpenAI, Speechmatics, Hugging Face for model download)
+- **reqwest** with `rustls-tls` + `stream` — all HTTPS (OpenAI, Hugging Face for model download)
 - **tokio** — async runtime; `spawn_blocking` wraps the local Whisper inference
 - **whisper-rs 0.13** with `metal` feature — bundles whisper.cpp via cmake, runs `large-v3-turbo-q5_0` on Apple Silicon GPUs
 - **parking_lot** — mutex for session state
@@ -85,9 +87,8 @@ The name is Norwegian for "bumblebee" (think: small, hum, personal).
 | `main.rs` | Tauri entry |
 | `commands.rs` | All `#[tauri::command]` fns; recording lifecycle; transcribe fan-out; summary; folders; settings |
 | `db.rs` | SQLite schema, migrations, CRUD for notes/folders/settings |
-| `recording.rs` | `RecordingSession` (child, temp dir, inflight handles, reader handle) |
+| `recording.rs` | `RecordingSession` (child, temp dir, inflight handles, reader handle) and `TranscriptTrail` (rolling 150-word window fed to Whisper as `initial_prompt`) |
 | `openai.rs` | Transcription + summary HTTP clients; default summary system prompt |
-| `speechmatics.rs` | Batch SaaS client; region routing; `additional_vocab` |
 | `local_whisper.rs` | On-device Whisper; `SharedContext`; download via HF; deletion |
 | `presets.rs` | Backend mirror of frontend preset prompts; `{LANGUAGE}` substitution |
 | `wav.rs` | Proper RIFF chunk walking; RMS for silence gate; mono-16k decoder |

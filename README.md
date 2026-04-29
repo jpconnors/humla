@@ -1,16 +1,17 @@
 # Humla
 
-Personal meeting transcription for macOS. Records mic + system audio, transcribes through your choice of provider (OpenAI Whisper, Speechmatics, or on-device Whisper via Metal), and produces structured Markdown summaries with per-note prompt presets.
+Personal meeting transcription for macOS. Records mic + system audio, transcribes through your choice of provider (OpenAI Whisper or on-device Whisper via Metal), and produces structured Markdown summaries with per-note prompt presets.
 
 Built native (Tauri 2, Rust, Swift), keyboard-driven, monochromatic Nothing-design aesthetic.
 
 ## Features
 
-- **Three transcription providers** — OpenAI (`whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe-diarize`), Speechmatics (with region selector for self-serve and enterprise endpoints), and on-device Whisper large-v3-turbo Q5_0 (~547 MB) via `whisper.cpp` with Metal.
-- **Mic + system audio** — Swift sidecar uses `AVAudioEngine` for the microphone and `ScreenCaptureKit` for system audio (the other side of meetings). 16 kHz mono WAV chunks, 20-second rotation.
+- **Two transcription providers** — OpenAI (`whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe-diarize`) and on-device Whisper large-v3-turbo Q5_0 (~547 MB) via `whisper.cpp` with Metal.
+- **Mic + system audio** — Swift sidecar uses `AVAudioEngine` for the microphone and `ScreenCaptureKit` for system audio (the other side of meetings). 16 kHz mono WAV chunks rotated at natural speech pauses (VAD-bounded, 1.5–12 s).
+- **Trailing transcript context** — every chunk is transcribed with the last ~150 committed words and the user's custom vocabulary as Whisper's `initial_prompt`, so decoding stays anchored to the conversation: stable proper nouns, sentence continuity across boundaries, and far fewer silence-driven hallucinations.
 - **Per-note summary presets** — Meeting (default), 1:1, Lecture, Interview, Brainstorm, Voice memo. Each is a tuned system prompt; you can also write a custom prompt globally. Output language follows the Settings language.
 - **Editable transcript** — auto-transcribed text is editable when not recording; your edits survive the next chunk.
-- **Pause/resume** — recording pauses without rotating the chunk; nothing fires at OpenAI/Speechmatics until you stop.
+- **Pause/resume** — recording pauses without rotating the chunk; nothing fires at the transcription provider until you stop.
 - **Hallucination scrubbing** — drops chunks below a silence threshold and trims known Whisper subtitle credits ("Undertekster av Ai-Media", "Subtitles by Amara.org", etc.) from the tail of real speech.
 - **Local model management** — download/delete the GGML model from Settings; the active model is reused in-process across chunks.
 - **System-aware light/dark theme** — Nothing-inspired palette, Space Grotesk + Space Mono, instrument-panel labels.
@@ -61,11 +62,9 @@ Both are reflected in Settings → Permissions with live status.
 
 Settings → Transcription:
 
-- **Provider** — OpenAI, Speechmatics, or Local (only enabled once the model is downloaded).
+- **Provider** — OpenAI or Local (only enabled once the model is downloaded).
 - **Language** — ISO 639-1 (Norwegian, English, Swedish, Danish, Auto).
 - **OpenAI model** — choose any of the supported transcribe endpoints.
-- **Speechmatics region** — EU1, EU2, US1, US2, AU1. Self-serve keys live on EU1.
-- **Operating point** (Speechmatics) — Standard or Enhanced.
 - **Local model** — Download / Delete buttons; shows ~547 MB Q5_0 large-v3-turbo.
 
 Settings → Summary:
