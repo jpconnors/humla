@@ -471,6 +471,10 @@ pub async fn recording_start(
         s.child = Some(child);
         s.temp_dir = Some(temp_dir);
         s.inflight = inflight.clone();
+        // Wipe any context from a previous recording — proper nouns and
+        // sentence fragments from a different conversation would only confuse
+        // this session's decoder.
+        s.trail.lock().clear();
     }
 
     let app_clone = app.clone();
@@ -668,10 +672,19 @@ async fn transcribe_chunk(
         }
     }
 
-    // Custom vocabulary fans out as a free-text prompt — both OpenAI Whisper
-    // and on-device whisper.cpp interpret `prompt`/`initial_prompt` as a
-    // continuation hint that biases decoding toward the listed tokens.
-    let vocab_prompt = vocabulary_prompt(&cfg.vocabulary);
+    // Whisper's `initial_prompt` slot conditions decoding on prior context.
+    // We compose two parts: the user's custom vocabulary (proper-noun bias)
+    // and a snapshot of the last ~150 committed words from this session.
+    // Combined, this carries sentence continuity, proper-noun spelling, and
+    // a non-empty prior — the single best mitigation for Whisper's
+    // silence/short-clip hallucinations.
+    let trail_snapshot = {
+        let state: State<AppState> = app.state();
+        let session = state.recording.lock();
+        let trail = session.trail.lock();
+        trail.as_prompt()
+    };
+    let prompt = build_initial_prompt(&cfg.vocabulary, trail_snapshot);
 
     let text = match cfg.provider.as_str() {
         "local" => {
@@ -684,7 +697,7 @@ async fn transcribe_chunk(
                 shared,
                 model_path,
                 &cfg.language,
-                vocab_prompt.as_deref(),
+                prompt.as_deref(),
                 &path,
             )
             .await?
@@ -694,7 +707,7 @@ async fn transcribe_chunk(
                 &cfg.api_key,
                 &cfg.openai_model,
                 Some(&cfg.language),
-                vocab_prompt.as_deref(),
+                prompt.as_deref(),
                 &path,
             )
             .await?
@@ -713,6 +726,14 @@ async fn transcribe_chunk(
         {
             let conn = state.db.lock();
             db::append_transcript(&conn, &note_id, &trimmed)?;
+        }
+        // Push the committed text into the per-session trail so the next
+        // chunk's prompt includes it. Only commit-stage text reaches here
+        // (silence-gated, hallucination-filtered, attribution-stripped),
+        // which keeps the trail from poisoning subsequent decodes.
+        {
+            let session = state.recording.lock();
+            session.trail.lock().push(&trimmed);
         }
         let _ = app.emit("transcript_appended", TranscriptPayload {
             note_id: note_id.clone(),
@@ -912,6 +933,24 @@ fn vocabulary_prompt(raw: &str) -> Option<String> {
         return None;
     }
     Some(items.join(", "))
+}
+
+// Compose the `initial_prompt` for a Whisper-family transcription call out of
+// the user's static vocabulary and the rolling tail of committed transcript
+// from the current session. Either part may be empty; if both are, the
+// caller should pass `None`.
+//
+// Budget note: Whisper's prompt context is ~224 tokens. Vocabulary is
+// typically <50 tokens; the trail is bounded to 150 words (~200 tokens).
+// Slight overflow is tolerated — whisper.cpp truncates internally.
+fn build_initial_prompt(vocabulary: &str, trail: Option<String>) -> Option<String> {
+    let vocab = vocabulary_prompt(vocabulary);
+    match (vocab, trail) {
+        (None, None) => None,
+        (Some(v), None) => Some(v),
+        (None, Some(t)) => Some(t),
+        (Some(v), Some(t)) => Some(format!("{v}\n\n{t}")),
+    }
 }
 
 // Whisper's training data contained millions of subtitle files, so it
