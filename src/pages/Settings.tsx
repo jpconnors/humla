@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ipc, onLocalWhisperProgress, type LocalWhisperStatus, type SettingsKey } from "../lib/ipc";
+import { ipc, onDiarizeDownloadProgress, onLocalWhisperProgress, type DiarizeModelStatus, type LocalWhisperStatus, type SettingsKey } from "../lib/ipc";
 import { useThemeStore, type Theme } from "../lib/theme";
 import { Permissions } from "../components/Permissions";
 import { SUMMARY_PRESETS, presetPromptForLang, presetLabelForLang } from "../lib/presets";
@@ -96,21 +96,40 @@ const EMPTY_LOCAL_STATE: LocalState = {
   error: null,
 };
 
+type DiarizeState = {
+  status: DiarizeModelStatus | null;
+  downloading: boolean;
+  fraction: number;
+  phase: "listing" | "downloading" | "compiling" | null;
+  error: string | null;
+};
+
+const EMPTY_DIARIZE_STATE: DiarizeState = {
+  status: null,
+  downloading: false,
+  fraction: 0,
+  phase: null,
+  error: null,
+};
+
 export function Settings() {
   const [openaiKey, setOpenaiKey] = useState<KeyState>(EMPTY_KEY_STATE);
   const [local, setLocal] = useState<LocalState>(EMPTY_LOCAL_STATE);
+  const [diarize, setDiarize] = useState<DiarizeState>(EMPTY_DIARIZE_STATE);
   const [s, setS] = useState<Record<EditableKey, string>>(DEFAULTS);
   const theme = useThemeStore((t) => t.theme);
   const setThemePref = useThemeStore((t) => t.setTheme);
 
   useEffect(() => {
     (async () => {
-      const [k1, lw] = await Promise.all([
+      const [k1, lw, ds] = await Promise.all([
         ipc.getApiKey(),
         ipc.localWhisperStatus(),
+        ipc.diarizeStatus().catch(() => null),
       ]);
       setOpenaiKey((p) => ({ ...p, hasKey: !!k1 }));
       setLocal((p) => ({ ...p, status: lw }));
+      setDiarize((p) => ({ ...p, status: ds }));
       const entries = await Promise.all(
         (Object.keys(DEFAULTS) as EditableKey[]).map(async (key) => [key, (await ipc.getSetting(key)) ?? DEFAULTS[key]] as const)
       );
@@ -122,6 +141,14 @@ export function Settings() {
     let unlisten: (() => void) | undefined;
     onLocalWhisperProgress((p) => {
       setLocal((s) => ({ ...s, received: p.received, total: p.total }));
+    }).then((u) => (unlisten = u));
+    return () => { unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onDiarizeDownloadProgress((p) => {
+      setDiarize((s) => ({ ...s, fraction: p.fraction, phase: p.phase }));
     }).then((u) => (unlisten = u));
     return () => { unlisten?.(); };
   }, []);
@@ -145,6 +172,28 @@ export function Settings() {
       setLocal({ status, downloading: false, received: 0, total: null, error: null });
     } catch (e) {
       setLocal((p) => ({ ...p, error: String(e) }));
+    }
+  }
+
+  async function downloadDiarize() {
+    setDiarize({ status: null, downloading: true, fraction: 0, phase: null, error: null });
+    try {
+      await ipc.diarizeDownload();
+      const status = await ipc.diarizeStatus();
+      setDiarize({ status, downloading: false, fraction: 0, phase: null, error: null });
+    } catch (e) {
+      const status = await ipc.diarizeStatus().catch(() => null);
+      setDiarize({ status, downloading: false, fraction: 0, phase: null, error: String(e) });
+    }
+  }
+
+  async function deleteDiarize() {
+    try {
+      await ipc.diarizeDelete();
+      const status = await ipc.diarizeStatus();
+      setDiarize({ status, downloading: false, fraction: 0, phase: null, error: null });
+    } catch (e) {
+      setDiarize((p) => ({ ...p, error: String(e) }));
     }
   }
 
@@ -274,6 +323,18 @@ export function Settings() {
               onDownload={downloadModel}
               onDelete={deleteModel}
             />
+          </Row>
+          <Row label="Speaker diarization">
+            <DiarizeModelManager
+              state={diarize}
+              onDownload={downloadDiarize}
+              onDelete={deleteDiarize}
+            />
+            <p className="text-xs text-[var(--color-text-muted)] mt-2">
+              When downloaded, every recording is automatically tagged with
+              <code> Speaker 1: </code>, <code> Speaker 2: </code> labels
+              before polishing. Runs locally via CoreML / Apple Neural Engine.
+            </p>
           </Row>
           <Row label="Custom vocabulary">
             <textarea
@@ -433,6 +494,71 @@ function LocalModelManager({
     <div className="flex flex-col gap-2">
       <div className="text-sm">
         Not downloaded. The model is ~547 MB and runs on-device with Metal.
+      </div>
+      <div className="flex gap-2">
+        <Btn onClick={onDownload}>Download model</Btn>
+      </div>
+      {state.error && (
+        <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
+      )}
+    </div>
+  );
+}
+
+function DiarizeModelManager({
+  state,
+  onDownload,
+  onDelete,
+}: {
+  state: DiarizeState;
+  onDownload: () => void;
+  onDelete: () => void;
+}) {
+  if (state.downloading) {
+    const pct = Math.min(100, state.fraction * 100);
+    const phaseLabel =
+      state.phase === "compiling"
+        ? "Compiling for Apple Neural Engine"
+        : state.phase === "listing"
+        ? "Listing files"
+        : "Downloading models";
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="text-sm">
+          {phaseLabel}… {state.phase === "compiling" ? "" : `${pct.toFixed(0)}%`}
+        </div>
+        <div className="h-1.5 rounded bg-[var(--color-pill-hover)] overflow-hidden">
+          <div
+            className="h-full bg-[var(--color-text-muted)] transition-[width] duration-150"
+            style={{ width: state.phase === "compiling" ? "100%" : `${pct}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (state.status?.downloaded) {
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="text-sm">
+          Downloaded — FluidAudio diarization (CoreML)
+          {state.status.sizeBytes ? ` (${formatBytes(state.status.sizeBytes)})` : ""}
+        </div>
+        <div className="flex gap-2">
+          <Btn onClick={onDelete}>Delete model</Btn>
+        </div>
+        {state.error && (
+          <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-sm">
+        Not downloaded. The model is ~500 MB. First-time setup also compiles
+        for the Apple Neural Engine, which takes 20-30 s.
       </div>
       <div className="flex gap-2">
         <Btn onClick={onDownload}>Download model</Btn>

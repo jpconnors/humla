@@ -1,44 +1,129 @@
 import Foundation
 import FluidAudio
 
-// Sidecar entrypoint. Usage:
-//   speaker-diarize <wav-path>
+// Sidecar entrypoints. All commands write a single JSON payload to stdout
+// (with download additionally streaming progress lines as JSON before the
+// final payload). Exit 0 on success, 1 on failure with stderr message.
 //
-// Writes a single JSON array to stdout: [{start_ms, end_ms, speaker_id}, ...]
-// Exits 0 on success, 1 on any failure (with a single-line error written
-// to stderr — the Rust caller logs it and falls back to an untagged
-// transcript).
+//   speaker-diarize <wav-path>   — run diarization on a WAV file
+//   speaker-diarize status       — model presence + size on disk
+//   speaker-diarize download     — download + compile the model (streams progress)
+//   speaker-diarize delete       — wipe the cached model directory
 
 let args = CommandLine.arguments
+
+func writeStderr(_ msg: String) {
+    FileHandle.standardError.write(Data("\(msg)\n".utf8))
+}
+
+func writeStdout(_ obj: Any) {
+    if let data = try? JSONSerialization.data(withJSONObject: obj),
+       let s = String(data: data, encoding: .utf8) {
+        print(s)
+        fflush(stdout)
+    }
+}
+
 guard args.count >= 2 else {
-    FileHandle.standardError.write(Data("usage: speaker-diarize <wav-path>\n".utf8))
+    writeStderr("usage: speaker-diarize (<wav-path>|status|download|delete)")
     exit(2)
 }
-let audioPath = args[1]
 
-func failHard(_ message: String) -> Never {
-    FileHandle.standardError.write(Data("\(message)\n".utf8))
-    exit(1)
+// CoreML models are .mlmodelc directories — `.size` on a directory only
+// reports the directory entry, not its contents. Walk recursively.
+func directorySize(_ url: URL) -> Int64 {
+    let enumerator = FileManager.default.enumerator(
+        at: url,
+        includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+        options: [.skipsHiddenFiles]
+    )
+    var total: Int64 = 0
+    while let item = enumerator?.nextObject() as? URL {
+        if let v = try? item.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+           v.isRegularFile == true,
+           let size = v.fileSize {
+            total += Int64(size)
+        }
+    }
+    return total
 }
 
-// FluidAudio uses async APIs (model download is awaitable). Drive a single
-// task to completion via a semaphore so the binary acts as a synchronous
-// CLI from the caller's perspective.
-let semaphore = DispatchSemaphore(value: 0)
-var exitCode: Int32 = 1
+func runStatus() {
+    let dir = DiarizerModels.defaultModelsDirectory()
+    let exists = FileManager.default.fileExists(atPath: dir.path)
+    if !exists {
+        writeStdout([
+            "downloaded": false,
+            "path": NSNull(),
+            "sizeBytes": NSNull(),
+        ] as [String: Any])
+        return
+    }
+    // Treat the directory as "downloaded" iff every required model file is
+    // present underneath it. Partial-download leftovers report as
+    // not-downloaded so the UI prompts a re-download instead of pretending
+    // diarization will work.
+    let required = DiarizerModels.requiredModelNames
+    var allPresent = true
+    for name in required {
+        let modelURL = dir.appendingPathComponent(name)
+        if !FileManager.default.fileExists(atPath: modelURL.path) {
+            allPresent = false
+            break
+        }
+    }
+    let size = directorySize(dir)
+    writeStdout([
+        "downloaded": allPresent,
+        "path": dir.path,
+        "sizeBytes": size,
+    ] as [String: Any])
+}
 
-Task {
-    defer { semaphore.signal() }
+func runDelete() {
+    let dir = DiarizerModels.defaultModelsDirectory()
+    if FileManager.default.fileExists(atPath: dir.path) {
+        try? FileManager.default.removeItem(at: dir)
+    }
+    writeStdout(["deleted": true, "path": dir.path])
+}
+
+func runDownload() async -> Int32 {
     do {
-        // First-run downloads ~500 MB of CoreML models from the public
-        // FluidInference HuggingFace mirror; subsequent runs hit the cache.
+        // FluidAudio's progressHandler is invoked during the underlying
+        // HuggingFace fetch + Core ML compile. Forward each call to stdout
+        // so the Rust side can emit Tauri events.
+        let _ = try await DiarizerModels.downloadIfNeeded(progressHandler: { progress in
+            // FluidAudio progress goes through three phases: listing files,
+            // downloading them, and compiling the CoreML models for the
+            // Apple Neural Engine. We surface a phase tag so the UI can
+            // distinguish the download vs the (slower) compile step.
+            let phase: String
+            switch progress.phase {
+            case .listing: phase = "listing"
+            case .downloading: phase = "downloading"
+            case .compiling: phase = "compiling"
+            }
+            writeStdout([
+                "event": "progress",
+                "fraction": progress.fractionCompleted,
+                "phase": phase,
+            ] as [String: Any])
+        })
+        writeStdout(["event": "done"])
+        return 0
+    } catch {
+        writeStderr("download error: \(error)")
+        return 1
+    }
+}
+
+func runDiarize(audioPath: String) async -> Int32 {
+    do {
         let models = try await DiarizerModels.downloadIfNeeded()
         let diarizer = DiarizerManager()
         diarizer.initialize(models: models)
 
-        // Resample / convert to the 16 kHz mono Float32 the model expects.
-        // The sidecar already writes WAVs in this format, but going through
-        // the converter is cheap insurance against future format drift.
         let converter = AudioConverter()
         let url = URL(fileURLWithPath: audioPath)
         let samples = try converter.resampleAudioFile(url)
@@ -55,11 +140,34 @@ Task {
         let data = try JSONSerialization.data(withJSONObject: payload)
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write(Data("\n".utf8))
-        exitCode = 0
+        return 0
     } catch {
-        FileHandle.standardError.write(Data("speaker-diarize error: \(error)\n".utf8))
+        writeStderr("speaker-diarize error: \(error)")
+        return 1
     }
 }
 
-semaphore.wait()
+let semaphore = DispatchSemaphore(value: 0)
+var exitCode: Int32 = 0
+
+switch args[1] {
+case "status":
+    runStatus()
+case "delete":
+    runDelete()
+case "download":
+    Task {
+        exitCode = await runDownload()
+        semaphore.signal()
+    }
+    semaphore.wait()
+default:
+    let path = args[1]
+    Task {
+        exitCode = await runDiarize(audioPath: path)
+        semaphore.signal()
+    }
+    semaphore.wait()
+}
+
 exit(exitCode)

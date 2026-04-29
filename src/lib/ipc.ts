@@ -45,6 +45,17 @@ export type LocalWhisperStatus = {
 
 export type LocalWhisperProgress = { received: number; total: number | null };
 
+export type DiarizeModelStatus = {
+  downloaded: boolean;
+  sizeBytes: number | null;
+  path: string | null;
+};
+
+export type DiarizeDownloadProgress = {
+  fraction: number;
+  phase: "listing" | "downloading" | "compiling";
+};
+
 export const ipc = {
   listNotes: () => invoke<Note[]>("notes_list"),
   getNote: (id: string) => invoke<Note>("notes_get", { id }),
@@ -72,6 +83,10 @@ export const ipc = {
     invoke<LocalWhisperStatus>("local_whisper_status"),
   localWhisperDownload: () => invoke<void>("local_whisper_download"),
   localWhisperDelete: () => invoke<void>("local_whisper_delete"),
+
+  diarizeStatus: () => invoke<DiarizeModelStatus>("diarize_status"),
+  diarizeDownload: () => invoke<void>("diarize_download"),
+  diarizeDelete: () => invoke<void>("diarize_delete"),
 
   recordingStart: (noteId: string) => invoke<void>("recording_start", { noteId }),
   recordingStop: () => invoke<void>("recording_stop"),
@@ -131,4 +146,7 @@ export function onRecordingDiagnostic(cb: (e: RecordingDiagnostic) => void): Pro
 }
 export function onLocalWhisperProgress(cb: (e: LocalWhisperProgress) => void): Promise<UnlistenFn> {
   return listen<LocalWhisperProgress>("local_whisper_progress", (e) => cb(e.payload));
+}
+export function onDiarizeDownloadProgress(cb: (e: DiarizeDownloadProgress) => void): Promise<UnlistenFn> {
+  return listen<DiarizeDownloadProgress>("diarize_download_progress", (e) => cb(e.payload));
 }

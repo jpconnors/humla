@@ -188,6 +188,23 @@ pub async fn api_key_test(state: State<'_, AppState>) -> Result<TestResult, Stri
     Ok(TestResult { ok: false, status: status.as_u16(), error: Some(snippet) })
 }
 
+// ---- Speaker diarization model management ---------------------------------
+
+#[tauri::command]
+pub async fn diarize_status(app: AppHandle) -> Result<diarize::ModelStatus, String> {
+    diarize::status(&app).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn diarize_download(app: AppHandle) -> Result<(), String> {
+    diarize::download(&app).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn diarize_delete(app: AppHandle) -> Result<(), String> {
+    diarize::delete(&app).await.map_err(err)
+}
+
 // ---- Local Whisper model management ----------------------------------------
 
 fn local_model_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -903,6 +920,22 @@ async fn run_diarization(app: AppHandle, note_id: String) -> anyhow::Result<()> 
     if chunks.is_empty() {
         diarize::cleanup_full_wav(&wav_path).await;
         return Ok(());
+    }
+
+    // Diarization is opt-in via Settings → "Speaker diarization". If the
+    // model isn't downloaded we skip silently — same UX as having local
+    // Whisper unconfigured. The full WAV still gets cleaned up.
+    match diarize::status(&app).await {
+        Ok(s) if !s.downloaded => {
+            diarize::cleanup_full_wav(&wav_path).await;
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("diarize status check: {e}");
+            diarize::cleanup_full_wav(&wav_path).await;
+            return Ok(());
+        }
+        _ => {}
     }
 
     emit_status(&app, Some(&note_id), Phase::Diarizing);
