@@ -93,6 +93,7 @@ type LocalState = {
   received: number;
   total: number | null;
   error: string | null;
+  flash: string | null;
 };
 
 const EMPTY_LOCAL_STATE: LocalState = {
@@ -101,6 +102,7 @@ const EMPTY_LOCAL_STATE: LocalState = {
   received: 0,
   total: null,
   error: null,
+  flash: null,
 };
 
 type DiarizeState = {
@@ -109,6 +111,7 @@ type DiarizeState = {
   fraction: number;
   phase: "listing" | "downloading" | "compiling" | null;
   error: string | null;
+  flash: string | null;
 };
 
 const EMPTY_DIARIZE_STATE: DiarizeState = {
@@ -117,6 +120,7 @@ const EMPTY_DIARIZE_STATE: DiarizeState = {
   fraction: 0,
   phase: null,
   error: null,
+  flash: null,
 };
 
 type LlmState = {
@@ -264,45 +268,67 @@ export function Settings() {
     }
   }
 
+  // Generic flash helper — schedules a 4s clear that only fires if the same
+  // message is still showing (so a fresh action doesn't get its toast wiped
+  // by a stale timer).
+  function flashLocal(msg: string) {
+    setLocal((p) => ({ ...p, flash: msg }));
+    window.setTimeout(() => {
+      setLocal((p) => (p.flash === msg ? { ...p, flash: null } : p));
+    }, 4000);
+  }
+  function flashDiarize(msg: string) {
+    setDiarize((p) => ({ ...p, flash: msg }));
+    window.setTimeout(() => {
+      setDiarize((p) => (p.flash === msg ? { ...p, flash: null } : p));
+    }, 4000);
+  }
+
   async function downloadModel() {
-    setLocal({ status: null, downloading: true, received: 0, total: null, error: null });
+    setLocal({ status: null, downloading: true, received: 0, total: null, error: null, flash: null });
     try {
       await ipc.localWhisperDownload();
       const status = await ipc.localWhisperStatus();
-      setLocal({ status, downloading: false, received: 0, total: null, error: null });
+      setLocal({ status, downloading: false, received: 0, total: null, error: null, flash: null });
+      flashLocal("Whisper model downloaded");
     } catch (e) {
       const status = await ipc.localWhisperStatus().catch(() => null);
-      setLocal({ status, downloading: false, received: 0, total: null, error: String(e) });
+      setLocal({ status, downloading: false, received: 0, total: null, error: String(e), flash: null });
     }
   }
 
   async function deleteModel() {
+    const beforePath = local.status?.path;
     try {
       await ipc.localWhisperDelete();
       const status = await ipc.localWhisperStatus();
-      setLocal({ status, downloading: false, received: 0, total: null, error: null });
+      setLocal({ status, downloading: false, received: 0, total: null, error: null, flash: null });
+      flashLocal(beforePath ? `Deleted ${beforePath}` : "Whisper model deleted");
     } catch (e) {
       setLocal((p) => ({ ...p, error: String(e) }));
     }
   }
 
   async function downloadDiarize() {
-    setDiarize({ status: null, downloading: true, fraction: 0, phase: null, error: null });
+    setDiarize({ status: null, downloading: true, fraction: 0, phase: null, error: null, flash: null });
     try {
       await ipc.diarizeDownload();
       const status = await ipc.diarizeStatus();
-      setDiarize({ status, downloading: false, fraction: 0, phase: null, error: null });
+      setDiarize({ status, downloading: false, fraction: 0, phase: null, error: null, flash: null });
+      flashDiarize("Speaker diarization model downloaded");
     } catch (e) {
       const status = await ipc.diarizeStatus().catch(() => null);
-      setDiarize({ status, downloading: false, fraction: 0, phase: null, error: String(e) });
+      setDiarize({ status, downloading: false, fraction: 0, phase: null, error: String(e), flash: null });
     }
   }
 
   async function deleteDiarize() {
+    const beforePath = diarize.status?.path;
     try {
       await ipc.diarizeDelete();
       const status = await ipc.diarizeStatus();
-      setDiarize({ status, downloading: false, fraction: 0, phase: null, error: null });
+      setDiarize({ status, downloading: false, fraction: 0, phase: null, error: null, flash: null });
+      flashDiarize(beforePath ? `Deleted ${beforePath}` : "Speaker diarization model deleted");
     } catch (e) {
       setDiarize((p) => ({ ...p, error: String(e) }));
     }
@@ -791,9 +817,19 @@ function LocalModelManager({
           Downloaded — Whisper large-v3-turbo Q5_0
           {state.status.sizeBytes ? ` (${formatBytes(state.status.sizeBytes)})` : ""}
         </div>
+        {state.status.path && (
+          <div className="text-xs text-[var(--color-text-muted)] font-mono break-all">
+            {state.status.path}
+          </div>
+        )}
         <div className="flex gap-2">
           <Btn onClick={onDelete}>Delete model</Btn>
         </div>
+        {state.flash && (
+          <p className="text-xs px-2 py-1 rounded bg-[var(--color-pill-hover)] inline-block break-all" role="status">
+            {state.flash}
+          </p>
+        )}
         {state.error && (
           <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
         )}
@@ -809,6 +845,11 @@ function LocalModelManager({
       <div className="flex gap-2">
         <Btn onClick={onDownload}>Download model</Btn>
       </div>
+      {state.flash && (
+        <p className="text-xs px-2 py-1 rounded bg-[var(--color-pill-hover)] inline-block break-all" role="status">
+          {state.flash}
+        </p>
+      )}
       {state.error && (
         <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
       )}
@@ -855,9 +896,19 @@ function DiarizeModelManager({
           Downloaded — FluidAudio diarization (CoreML)
           {state.status.sizeBytes ? ` (${formatBytes(state.status.sizeBytes)})` : ""}
         </div>
+        {state.status.path && (
+          <div className="text-xs text-[var(--color-text-muted)] font-mono break-all">
+            {state.status.path}
+          </div>
+        )}
         <div className="flex gap-2">
           <Btn onClick={onDelete}>Delete model</Btn>
         </div>
+        {state.flash && (
+          <p className="text-xs px-2 py-1 rounded bg-[var(--color-pill-hover)] inline-block break-all" role="status">
+            {state.flash}
+          </p>
+        )}
         {state.error && (
           <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
         )}
@@ -874,6 +925,11 @@ function DiarizeModelManager({
       <div className="flex gap-2">
         <Btn onClick={onDownload}>Download model</Btn>
       </div>
+      {state.flash && (
+        <p className="text-xs px-2 py-1 rounded bg-[var(--color-pill-hover)] inline-block break-all" role="status">
+          {state.flash}
+        </p>
+      )}
       {state.error && (
         <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
       )}
