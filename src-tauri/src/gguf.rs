@@ -95,8 +95,12 @@ fn read_u64<R: Read>(r: &mut R) -> Result<u64> {
 }
 
 fn read_string<R: Read>(r: &mut R) -> Result<String> {
+    // Sanity ceiling — Gemma's chat template metadata is ~16 KB, tokenizer
+    // pre-tokenizer regexes can be larger. 1 MB is comfortable headroom and
+    // still rejects an obvious garbage file where length bytes happen to
+    // decode to gigabyte-sized values.
     let len = read_u64(r)? as usize;
-    if len > 1024 {
+    if len > 1_048_576 {
         bail!("gguf string too long: {len}");
     }
     let mut buf = vec![0u8; len];

@@ -32,6 +32,11 @@ const PROVIDERS_BASE = [
 ];
 const LOCAL_PROVIDER = { value: "local", label: "Local (Whisper turbo, on-device)" };
 
+const SUMMARY_PROVIDERS = [
+  { value: "openai", label: "Cloud (OpenAI)" },
+  { value: "local", label: "Local (Gemma 4, on-device)" },
+];
+
 const WHISPER_PRESETS = [
   { value: "fast", label: "Fast — lower latency, may drop borderline words" },
   { value: "balanced", label: "Balanced — good speed and accuracy" },
@@ -439,32 +444,18 @@ export function Settings() {
 
         <Section title="Summary">
           <Row label="Provider">
-            <div className="flex gap-2">
-              {[
-                { value: "openai", label: "Cloud (OpenAI)" },
-                { value: "local", label: "Local (Gemma 4, on-device)" },
-              ].map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() => update("summary_provider", opt.value)}
-                  className={
-                    "px-3 py-1.5 rounded-md text-sm border " +
-                    (s.summary_provider === opt.value
-                      ? "border-[var(--color-text)] bg-[var(--color-text)] text-[var(--color-canvas)]"
-                      : "border-[var(--color-line)]")
-                  }
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
+            <Select
+              value={s.summary_provider}
+              onChange={(v) => update("summary_provider", v)}
+              options={SUMMARY_PROVIDERS}
+            />
             <p className="text-xs text-[var(--color-text-muted)] mt-2">
               Local keeps the transcript on your Mac — pick this for confidential
               meetings. Cloud is faster and produces better summaries but sends
               the transcript to OpenAI.
             </p>
           </Row>
-          {s.summary_provider !== "local" && (
+          {s.summary_provider === "openai" && (
             <Row label="Model">
               <Select
                 value={s.summary_model}
@@ -472,6 +463,71 @@ export function Settings() {
                 options={SUMMARY_MODELS.map((m) => ({ value: m, label: m }))}
               />
             </Row>
+          )}
+          {s.summary_provider === "local" && (
+            <>
+              <Row label="Model">
+                <Select
+                  value={s.summary_local_model}
+                  onChange={(v) => {
+                    if (v.startsWith("path:")) {
+                      // Route through the validation command — it sniffs the
+                      // GGUF and rejects incompatible files before persisting.
+                      selectExistingLlm(v.slice(5));
+                    } else {
+                      update("summary_local_model", v);
+                    }
+                  }}
+                  options={[
+                    { value: "managed:e2b", label: "Gemma 4 E2B — ~2.9 GB · faster" },
+                    { value: "managed:e4b", label: "Gemma 4 E4B — ~5.0 GB · recommended" },
+                    ...(llm.scan ?? [])
+                      .filter((m) => m.compatible)
+                      .map((m) => ({
+                        value: `path:${m.path}`,
+                        label: `${m.name} — ${m.source} · ${m.architecture} ${m.quantization}`,
+                      })),
+                  ]}
+                />
+                {memoryGb > 0 && memoryGb <= 16 && s.summary_local_model === "managed:e4b" && (
+                  <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                    Heads up: your Mac has {memoryGb} GB of RAM. E4B uses
+                    ~5 GB resident during summary; with Whisper and your
+                    browser already loaded that may swap. E2B is the safer
+                    pick on 16 GB systems.
+                  </p>
+                )}
+              </Row>
+              <Row label="Local model">
+                <LocalLlmModelManager
+                  state={llm}
+                  selected={s.summary_local_model}
+                  onDownload={downloadLlm}
+                  onDelete={deleteLlm}
+                />
+              </Row>
+              <Row label="Already installed?">
+                <div className="flex flex-col gap-2">
+                  <div className="flex gap-2">
+                    <Btn onClick={scanLlm} disabled={llm.scanning}>
+                      {llm.scanning ? "Scanning…" : "Scan LM Studio / Ollama / HF"}
+                    </Btn>
+                  </div>
+                  {llm.scan && llm.scan.length === 0 && (
+                    <p className="text-xs text-[var(--color-text-muted)]">
+                      No compatible GGUFs found. We look in <code>~/.cache/lm-studio</code>,
+                      <code> ~/.ollama</code>, and <code>~/.cache/huggingface</code>.
+                    </p>
+                  )}
+                  {llm.scan && llm.scan.length > 0 && (
+                    <p className="text-xs text-[var(--color-text-muted)]">
+                      {llm.scan.filter((m) => m.compatible).length} compatible model(s)
+                      added to the Model dropdown above.
+                    </p>
+                  )}
+                </div>
+              </Row>
+            </>
           )}
           <Row label="Custom prompt">
             <p className="text-xs text-[var(--color-text-muted)] mb-2">
@@ -508,174 +564,110 @@ export function Settings() {
           </Row>
         </Section>
 
-        {s.summary_provider === "local" && (
-          <Section title="Local summarization model">
-            <p className="text-xs text-[var(--color-text-muted)] -mt-2">
-              Gemma 4 runs entirely on your Mac. Pick a size, or scan for
-              models you already have installed via LM Studio or Ollama.
-            </p>
-            <ManagedLlmRow
-              label="Gemma 4 E2B"
-              hint="~2.9 GB · Q8_0 · faster"
-              variant="e2b"
-              downloaded={!!llm.status?.e2bDownloaded}
-              size={llm.status?.e2bSizeBytes ?? null}
-              selected={s.summary_local_model === "managed:e2b"}
-              progress={llm.downloading === "e2b" ? llm : null}
-              onSelect={() => update("summary_local_model", "managed:e2b")}
-              onDownload={() => downloadLlm("e2b")}
-              onDelete={() => deleteLlm("e2b")}
-            />
-            <ManagedLlmRow
-              label="Gemma 4 E4B"
-              hint="~5.0 GB · Q4_K_M · recommended"
-              variant="e4b"
-              downloaded={!!llm.status?.e4bDownloaded}
-              size={llm.status?.e4bSizeBytes ?? null}
-              selected={s.summary_local_model === "managed:e4b"}
-              progress={llm.downloading === "e4b" ? llm : null}
-              onSelect={() => update("summary_local_model", "managed:e4b")}
-              onDownload={() => downloadLlm("e4b")}
-              onDelete={() => deleteLlm("e4b")}
-            />
-            {memoryGb > 0 && memoryGb <= 16 && (
-              <p className="text-xs text-[var(--color-text-muted)] -mt-2">
-                Heads up: your Mac has {memoryGb} GB of RAM. E4B uses ~5 GB
-                resident during summary; with Whisper and your browser
-                already loaded that may swap. E2B is the safer pick on
-                16 GB systems.
-              </p>
-            )}
-            <Row label="Already installed?">
-              <button
-                onClick={scanLlm}
-                disabled={llm.scanning}
-                className="px-3 py-1.5 rounded-md text-sm border border-[var(--color-line)] disabled:opacity-50"
-              >
-                {llm.scanning ? "Scanning…" : "Scan LM Studio / Ollama / HF"}
-              </button>
-              {llm.scan && llm.scan.length === 0 && (
-                <p className="text-xs text-[var(--color-text-muted)] mt-2">
-                  No compatible models found. We look in <code>~/.cache/lm-studio</code>,
-                  <code> ~/.ollama</code>, and <code>~/.cache/huggingface</code>.
-                </p>
-              )}
-              {llm.scan && llm.scan.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {llm.scan.map((m) => {
-                    const active = s.summary_local_model === `path:${m.path}`;
-                    const sizeGb = (m.sizeBytes / 1e9).toFixed(1);
-                    return (
-                      <div
-                        key={m.path}
-                        className="flex items-center justify-between rounded-md border border-[var(--color-line)] px-3 py-2 text-sm"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate" title={m.path}>{m.name}</div>
-                          <div className="text-xs text-[var(--color-text-muted)]">
-                            {m.source} · {m.architecture} {m.quantization} · {sizeGb} GB
-                            {!m.compatible && " · incompatible"}
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => selectExistingLlm(m.path)}
-                          disabled={!m.compatible || active}
-                          className="px-2 py-1 rounded text-xs border border-[var(--color-line)] disabled:opacity-40 ml-3 shrink-0"
-                        >
-                          {active ? "Active" : "Use this"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </Row>
-            {llm.error && (
-              <p className="text-xs text-[var(--color-accent)]">Error: {llm.error}</p>
-            )}
-          </Section>
-        )}
       </div>
     </div>
   );
 }
 
-function ManagedLlmRow({
-  label,
-  hint,
-  variant,
-  downloaded,
-  size,
+// Status + actions for the currently-selected local LLM. Mirrors
+// LocalModelManager's three states (downloading / installed / not-yet) so
+// the Settings UI feels uniform across Whisper / Diarize / Local LLM.
+//
+// Variants:
+// - "managed:e2b" / "managed:e4b" — show download/delete based on llm.status
+// - "path:..." — show the path with no managed actions (it's the user's file)
+function LocalLlmModelManager({
+  state,
   selected,
-  progress,
-  onSelect,
   onDownload,
   onDelete,
 }: {
-  label: string;
-  hint: string;
-  variant: "e2b" | "e4b";
-  downloaded: boolean;
-  size: number | null;
-  selected: boolean;
-  progress: LlmState | null;
-  onSelect: () => void;
-  onDownload: () => void;
-  onDelete: () => void;
+  state: LlmState;
+  selected: string;
+  onDownload: (variant: "e2b" | "e4b") => void;
+  onDelete: (variant: "e2b" | "e4b") => void;
 }) {
-  const sizeGb = size != null ? (size / 1e9).toFixed(1) : null;
-  const downloading = progress?.downloading === variant;
-  const fraction =
-    progress && progress.total && progress.total > 0
-      ? progress.received / progress.total
-      : 0;
+  const isManaged = selected.startsWith("managed:");
+  const variant: "e2b" | "e4b" | null = selected === "managed:e2b" ? "e2b"
+    : selected === "managed:e4b" ? "e4b"
+    : null;
+  const downloaded = variant === "e2b"
+    ? !!state.status?.e2bDownloaded
+    : variant === "e4b"
+    ? !!state.status?.e4bDownloaded
+    : false;
+  const sizeBytes = variant === "e2b"
+    ? state.status?.e2bSizeBytes
+    : variant === "e4b"
+    ? state.status?.e4bSizeBytes
+    : null;
+  const total = state.total ?? null;
+  const pct = state.downloading && total
+    ? Math.min(100, (state.received / total) * 100)
+    : null;
+
+  if (!isManaged) {
+    const path = selected.startsWith("path:") ? selected.slice(5) : selected;
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="text-sm break-all">Using {path}</div>
+        <p className="text-xs text-[var(--color-text-muted)]">
+          External file managed outside Humla. If you remove or rename it,
+          summaries will fail until you re-pick a model.
+        </p>
+        {state.error && (
+          <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
+        )}
+      </div>
+    );
+  }
+
+  if (state.downloading === variant) {
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="text-sm">
+          Downloading {variant?.toUpperCase()}{total ? ` ${formatBytes(state.received)} / ${formatBytes(total)}` : ` ${formatBytes(state.received)}`}…
+        </div>
+        <div className="h-1.5 rounded bg-[var(--color-pill-hover)] overflow-hidden">
+          <div
+            className="h-full bg-[var(--color-text-muted)] transition-[width] duration-150"
+            style={{ width: pct === null ? "30%" : `${pct}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (downloaded) {
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="text-sm">
+          Downloaded — Gemma 4 {variant?.toUpperCase()}
+          {sizeBytes ? ` (${formatBytes(sizeBytes)})` : ""}
+        </div>
+        <div className="flex gap-2">
+          <Btn onClick={() => variant && onDelete(variant)}>Delete model</Btn>
+        </div>
+        {state.error && (
+          <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
+        )}
+      </div>
+    );
+  }
+
+  const sizeHint = variant === "e2b" ? "~2.9 GB" : "~5.0 GB";
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-[var(--color-line)] px-3 py-2 text-sm">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span>{label}</span>
-          {selected && (
-            <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--color-text)] text-[var(--color-canvas)]">
-              Active
-            </span>
-          )}
-        </div>
-        <div className="text-xs text-[var(--color-text-muted)]">
-          {hint}
-          {downloaded && sizeGb && ` · installed (${sizeGb} GB)`}
-        </div>
-        {downloading && (
-          <div className="text-xs mt-1">
-            Downloading… {Math.round(fraction * 100)}%
-          </div>
-        )}
+    <div className="flex flex-col gap-2">
+      <div className="text-sm">
+        Not downloaded. Gemma 4 {variant?.toUpperCase()} is {sizeHint} and runs
+        on-device with Metal.
       </div>
-      <div className="flex gap-2 shrink-0">
-        {!downloaded && !downloading && (
-          <button
-            onClick={onDownload}
-            className="px-2 py-1 rounded text-xs border border-[var(--color-line)]"
-          >
-            Download
-          </button>
-        )}
-        {downloaded && !selected && (
-          <button
-            onClick={onSelect}
-            className="px-2 py-1 rounded text-xs border border-[var(--color-line)]"
-          >
-            Use
-          </button>
-        )}
-        {downloaded && (
-          <button
-            onClick={onDelete}
-            className="px-2 py-1 rounded text-xs border border-[var(--color-line)]"
-          >
-            Delete
-          </button>
-        )}
+      <div className="flex gap-2">
+        <Btn onClick={() => variant && onDownload(variant)}>Download model</Btn>
       </div>
+      {state.error && (
+        <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
+      )}
     </div>
   );
 }
