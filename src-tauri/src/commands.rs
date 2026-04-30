@@ -1242,40 +1242,46 @@ pub async fn summarize_note(app: AppHandle, note_id: String) -> Result<(), Strin
     result.map_err(|e| e.to_string())
 }
 
-/// User-triggered polish. Validates that there's a cloud provider available
-/// (polish currently skips on local), then runs polish in a background task
-/// so the IPC call returns immediately. Emits Phase::Polishing → Phase::Idle
-/// the same way the auto-polish path does.
+/// User-triggered polish. **Cloud-only by design** — polish is a fast,
+/// cheap cleanup that takes seconds on OpenAI but several minutes on a
+/// local Qwen 3.5:9B (often with thinking-mode loops on top). The per-note
+/// `summary_provider` override applies to *summaries*; polish always uses
+/// the OpenAI cloud provider regardless of that setting. Errors clearly
+/// when no OpenAI API key is configured.
 #[tauri::command]
 pub async fn polish_note(app: AppHandle, note_id: String) -> Result<(), String> {
-    {
+    let provider = {
         let state: State<AppState> = app.state();
         let conn = state.db.lock();
         let n = db::get_note(&conn, &note_id).map_err(err)?;
         if n.transcript.trim().is_empty() {
             return Err("Nothing to polish — transcript is empty.".to_string());
         }
-        match resolve_provider(&conn, &n) {
-            Ok(p) if p.base_url == openai::BASE => {}
-            Ok(_) => {
-                return Err(
-                    "Polish requires the OpenAI provider. Switch the summary provider to OpenAI in Settings to enable polish."
-                        .to_string(),
-                );
-            }
-            Err(_) => {
-                return Err(
-                    "No summary provider configured. Add an OpenAI API key in Settings."
-                        .to_string(),
-                );
-            }
+        let api_key = db::get_setting(&conn, API_KEY)
+            .map_err(err)?
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                "Polish requires an OpenAI API key. Add one in Settings to enable polish."
+                    .to_string()
+            })?;
+        let model = db::get_setting(&conn, "summary_model")
+            .map_err(err)?
+            .unwrap_or_else(|| DEFAULT_SUMMARY_MODEL.to_string());
+        ResolvedProvider {
+            base_url: openai::BASE.into(),
+            api_key,
+            model,
+            think: false,
         }
-    }
+    };
 
     let app_for_task = app.clone();
     let note_for_task = note_id.clone();
     tokio::spawn(async move {
-        if let Err(e) = polish_transcript(app_for_task.clone(), note_for_task.clone()).await {
+        if let Err(e) =
+            polish_transcript_inner(app_for_task.clone(), note_for_task.clone(), provider).await
+        {
             eprintln!("manual polish failed: {e:#}");
             emit_error(
                 &app_for_task,
@@ -1288,43 +1294,59 @@ pub async fn polish_note(app: AppHandle, note_id: String) -> Result<(), String> 
     Ok(())
 }
 
+// Auto-polish entry point used by recording_stop. Resolves the configured
+// summary provider and skips on local — local polish would block the user's
+// subsequent Summarize click for several minutes. Manual polish_note builds
+// its own cloud-only provider and calls polish_transcript_inner directly.
+async fn polish_transcript(app: AppHandle, note_id: String) -> anyhow::Result<()> {
+    let provider = {
+        let state: State<AppState> = app.state();
+        let conn = state.db.lock();
+        let n = match db::get_note(&conn, &note_id) {
+            Ok(n) => n,
+            Err(_) => return Ok(()),
+        };
+        if n.transcript.trim().is_empty() {
+            return Ok(());
+        }
+        match resolve_provider(&conn, &n) {
+            Ok(p) if p.base_url == openai::BASE => p,
+            Ok(_) => {
+                eprintln!("[llm] auto-polish skipped (local provider): note={note_id}");
+                return Ok(());
+            }
+            Err(_) => return Ok(()),
+        }
+    };
+    polish_transcript_inner(app, note_id, provider).await
+}
+
 // Polish a freshly-recorded transcript via a chat-completion pass. Whisper's
 // raw output is usually correct in substance but littered with typos,
 // chunk-boundary mid-word cuts ("mistenkte" → "mistred"), and missing
 // punctuation. The user's notes + custom vocabulary are passed as context so
 // the model spells proper nouns and domain terms correctly.
 //
-// Skips silently when there's no transcript, no OpenAI API key, or the
-// transcript was modified between the snapshot read and the polished write
-// (the user started another recording on the same note while polish was in
-// flight) — the latter check prevents losing freshly-appended chunks.
-async fn polish_transcript(app: AppHandle, note_id: String) -> anyhow::Result<()> {
-    let (provider, transcript_snapshot, body, vocabulary) = {
+// Provider is supplied by the caller so polish_note (manual) can force
+// OpenAI cloud while polish_transcript (auto) follows the configured
+// summary provider. Skips silently when the transcript was modified
+// between the snapshot read and the polished write — the user started
+// another recording on the same note while polish was in flight, and we
+// don't want to clobber freshly-appended chunks.
+async fn polish_transcript_inner(
+    app: AppHandle,
+    note_id: String,
+    provider: ResolvedProvider,
+) -> anyhow::Result<()> {
+    let (transcript_snapshot, body, vocabulary) = {
         let state: State<AppState> = app.state();
         let conn = state.db.lock();
         let n = db::get_note(&conn, &note_id)?;
         if n.transcript.trim().is_empty() {
             return Ok(()); // nothing to polish
         }
-        // No-provider conditions (no API key, no local model) silently skip
-        // — polish is a best-effort step, not something to error the recording out for.
-        let provider = match resolve_provider(&conn, &n) {
-            Ok(p) => p,
-            Err(_) => return Ok(()),
-        };
-        // Skip polish on local providers. Polish regenerates the entire
-        // transcript with edits, so on a 30-min meeting it's ~6,000 output
-        // tokens at ~30 tok/s = several minutes per call. That blocks the
-        // Ollama queue and makes the user-triggered Summarize wait behind
-        // it. Cloud OpenAI is fast enough that this isn't an issue.
-        // Whisper turbo's raw output is high-quality enough that skipping
-        // polish on local is an acceptable trade for not waiting.
-        if provider.base_url != openai::BASE {
-            eprintln!("[llm] polish skipped (local provider): note={note_id}");
-            return Ok(());
-        }
         let vocab = db::get_setting(&conn, "custom_vocabulary")?.unwrap_or_default();
-        (provider, n.transcript.clone(), n.body.clone(), vocab)
+        (n.transcript.clone(), n.body.clone(), vocab)
     };
 
     let body_text = html_to_text(&body);
