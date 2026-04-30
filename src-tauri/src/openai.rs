@@ -181,13 +181,27 @@ pub async fn summarize_with_base(
         ],
     };
     let http = if is_local { local_client() } else { client() };
+    let url = format!("{base_url}/chat/completions");
+    let started = std::time::Instant::now();
+    eprintln!(
+        "[llm] POST {url} model={model} system_chars={} user_chars={}",
+        system_prompt.len(),
+        transcript.len()
+    );
     let r = http
-        .post(format!("{base_url}/chat/completions"))
+        .post(&url)
         .bearer_auth(api_key)
         .json(&req)
         .send()
         .await
         .map_err(|e| {
+            eprintln!(
+                "[llm] send error after {:?}: timeout={} connect={} body={}",
+                started.elapsed(),
+                e.is_timeout(),
+                e.is_connect(),
+                e
+            );
             // reqwest's timeout error looks like "request timed out" and
             // its connect error like "error sending request". Both are
             // opaque to the user; map to something actionable.
@@ -207,15 +221,35 @@ pub async fn summarize_with_base(
             }
         })?;
 
-    if !r.status().is_success() {
-        let s = r.status();
+    let status = r.status();
+    eprintln!("[llm] response {status} after {:?}", started.elapsed());
+    if !status.is_success() {
         let body = r.text().await.unwrap_or_default();
-        return Err(anyhow!("HTTP {s} from {base_url}: {body}"));
+        eprintln!("[llm] error body: {body}");
+        return Err(anyhow!("HTTP {status} from {base_url}: {body}"));
     }
-    let body: ChatResponse = r.json().await?;
+    // Read the body once so we can log it on parse failure (Ollama's error
+    // shape on quirky responses isn't always OpenAI-compat).
+    let body_text = r.text().await?;
+    let body: ChatResponse = match serde_json::from_str(&body_text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[llm] could not parse response as ChatResponse: {e}\n\
+                 [llm] body (first 500 chars): {}",
+                &body_text.chars().take(500).collect::<String>()
+            );
+            return Err(anyhow!("unexpected response shape from {base_url}: {e}"));
+        }
+    };
     let content = body.choices.into_iter().next()
         .map(|c| c.message.content)
         .unwrap_or_default();
+    eprintln!(
+        "[llm] success in {:?}, output {} chars",
+        started.elapsed(),
+        content.len()
+    );
     Ok(content)
 }
 

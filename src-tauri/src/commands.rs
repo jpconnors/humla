@@ -1040,14 +1040,19 @@ fn resolve_provider(
     conn: &rusqlite::Connection,
     note: &Note,
 ) -> anyhow::Result<ResolvedProvider> {
-    let provider = if note.summary_provider.trim().is_empty() {
+    let note_override = note.summary_provider.trim();
+    let provider = if note_override.is_empty() {
         db::get_setting(conn, "summary_provider")
             .ok()
             .flatten()
             .unwrap_or_else(|| "openai".into())
     } else {
-        note.summary_provider.clone()
+        note_override.to_string()
     };
+    eprintln!(
+        "[llm] resolve_provider: note={} note_override={:?} effective={}",
+        note.id, note_override, provider
+    );
 
     match provider.as_str() {
         "local" => {
@@ -1061,6 +1066,7 @@ fn resolve_provider(
                 .ok_or_else(|| anyhow::anyhow!(
                     "local LLM model not configured — pick one in Settings"
                 ))?;
+            eprintln!("[llm] resolved local: url={base_url} model={model}");
             Ok(ResolvedProvider {
                 base_url,
                 api_key: "humla-local".into(),
@@ -1074,6 +1080,7 @@ fn resolve_provider(
                 .ok_or_else(|| anyhow::anyhow!("OpenAI API key not set"))?;
             let model = db::get_setting(conn, "summary_model")?
                 .unwrap_or_else(|| DEFAULT_SUMMARY_MODEL.to_string());
+            eprintln!("[llm] resolved openai: model={model}");
             Ok(ResolvedProvider {
                 base_url: openai::BASE.into(),
                 api_key,
@@ -1085,11 +1092,16 @@ fn resolve_provider(
 
 #[tauri::command]
 pub async fn summarize_note(app: AppHandle, note_id: String) -> Result<(), String> {
+    eprintln!("[llm] summarize_note invoked for note={note_id}");
     // Reflect the in-flight summary in the recording status so the UI can
     // show a spinner. Use the existing Summarizing phase.
     emit_status(&app, Some(&note_id), Phase::Summarizing);
     let result = run_summary(app.clone(), note_id.clone()).await;
     emit_status(&app, None, Phase::Idle);
+    match &result {
+        Ok(()) => eprintln!("[llm] summarize_note succeeded"),
+        Err(e) => eprintln!("[llm] summarize_note failed: {e:#}"),
+    }
     result.map_err(|e| e.to_string())
 }
 
@@ -1125,6 +1137,7 @@ async fn polish_transcript(app: AppHandle, note_id: String) -> anyhow::Result<()
         // Whisper turbo's raw output is high-quality enough that skipping
         // polish on local is an acceptable trade for not waiting.
         if provider.base_url != openai::BASE {
+            eprintln!("[llm] polish skipped (local provider): note={note_id}");
             return Ok(());
         }
         let vocab = db::get_setting(&conn, "custom_vocabulary")?.unwrap_or_default();

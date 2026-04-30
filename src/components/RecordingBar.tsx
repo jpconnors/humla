@@ -45,8 +45,15 @@ export function RecordingBar({ noteId }: { noteId: string }) {
     catch (e) { useRecordingStore.getState().pushError({ noteId, message: String(e) }); }
   }
   async function summarize() {
-    try { await ipc.summarizeNote(noteId); }
-    catch (e) { useRecordingStore.getState().pushError({ noteId, message: String(e) }); }
+    const t0 = performance.now();
+    console.log(`[llm] summarize click note=${noteId}`);
+    try {
+      await ipc.summarizeNote(noteId);
+      console.log(`[llm] summarize ok in ${Math.round(performance.now() - t0)}ms`);
+    } catch (e) {
+      console.error(`[llm] summarize failed in ${Math.round(performance.now() - t0)}ms:`, e);
+      useRecordingStore.getState().pushError({ noteId, message: String(e) });
+    }
   }
 
   const otherNoteRecording = status.noteId !== null && !isThisNote;
