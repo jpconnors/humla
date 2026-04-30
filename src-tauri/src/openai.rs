@@ -318,6 +318,11 @@ struct OllamaChatRequest<'a> {
 #[derive(Serialize)]
 struct OllamaOptions {
     temperature: f32,
+    // Hard cap on generated tokens. Without this, Qwen 3+ thinking mode can
+    // burn 5K+ tokens reasoning before answering even on tiny inputs.
+    // 4096 is comfortably enough for thinking + a multi-paragraph summary,
+    // and stops a runaway model from hanging the UI for minutes on end.
+    num_predict: i32,
 }
 
 #[derive(Deserialize)]
@@ -346,7 +351,10 @@ async fn ollama_native_chat(
         ],
         stream: false,
         think,
-        options: OllamaOptions { temperature: 0.2 },
+        options: OllamaOptions {
+            temperature: 0.2,
+            num_predict: 4096,
+        },
     };
     let started = std::time::Instant::now();
     eprintln!(
