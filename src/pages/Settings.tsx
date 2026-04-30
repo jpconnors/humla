@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { ipc, onDiarizeDownloadProgress, onLocalWhisperProgress, type DiarizeModelStatus, type LocalWhisperStatus, type SettingsKey } from "../lib/ipc";
 import { useThemeStore, type Theme } from "../lib/theme";
 import { Permissions } from "../components/Permissions";
@@ -188,7 +189,14 @@ export function Settings() {
       list.sort();
       setLlmModels({ list, loading: false, error: null });
     } catch (e) {
-      setLlmModels({ list: null, loading: false, error: String(e) });
+      // reqwest's connection-refused error shows up as "error sending request
+      // for url (...)" which is opaque to non-technical users. Replace it
+      // with a clearer prompt that names the likely cause and the fix.
+      const raw = String(e);
+      const friendly = /error sending request|connection refused|failed to connect/i.test(raw)
+        ? `Couldn't reach the server at ${baseUrl}. Is your local-LLM tool running?`
+        : raw;
+      setLlmModels({ list: null, loading: false, error: friendly });
     }
   }
 
@@ -448,11 +456,22 @@ export function Settings() {
                   style={{ fontFamily: "var(--font-mono)" }}
                 />
                 <p className="text-xs text-[var(--color-text-muted)] mt-2">
-                  OpenAI-compatible endpoint. Defaults to Ollama on its
-                  standard port. Other supported runtimes: LM Studio
-                  (<code>http://localhost:1234/v1</code>), <code>llama-server</code>,
-                  vLLM, and most modern local-LLM tools. Install one and
-                  pull a model before recording.
+                  OpenAI-compatible endpoint. Defaults to Ollama's standard
+                  port. Also works with LM Studio (<code>http://localhost:1234/v1</code>),
+                  <code> llama-server</code>, vLLM, and most modern local-LLM
+                  tools.
+                </p>
+                <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                  Don't have one yet?{" "}
+                  <button
+                    type="button"
+                    onClick={() => openExternal("https://ollama.com/download")}
+                    className="underline hover:text-[var(--color-text)]"
+                  >
+                    Install Ollama
+                  </button>
+                  , then run <code>ollama pull qwen3:4b</code> (or any model
+                  you prefer) in a Terminal before recording.
                 </p>
               </Row>
               <Row label="Model">

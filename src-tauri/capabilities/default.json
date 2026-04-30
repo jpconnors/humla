@@ -24,6 +24,14 @@
       "allow": [
         { "name": "binaries/audio-capture", "sidecar": true }
       ]
+    },
+    {
+      "identifier": "shell:allow-open",
+      "allow": [
+        { "url": "https://ollama.com/**" },
+        { "url": "https://lmstudio.ai/**" },
+        { "url": "https://github.com/ggml-org/llama.cpp/**" }
+      ]
     }
   ]
 }
