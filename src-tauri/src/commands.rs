@@ -1244,11 +1244,23 @@ async fn run_summary(app: AppHandle, note_id: String) -> anyhow::Result<()> {
         presets::prompt(&note.summary_preset, &language)
     };
     let body_text = html_to_text(&note.body);
-    let user_message = match (body_text.is_empty(), note.transcript.trim().is_empty()) {
-        (true, _) => format!("[Transkripsjon]\n{}", note.transcript),
-        (false, true) => format!("[Notater]\n{body_text}"),
-        (false, false) => format!("[Notater]\n{body_text}\n\n[Transkripsjon]\n{}", note.transcript),
+    // Always send both labels even when one side is empty. Sending only
+    // [Transkripsjon] while the system prompt references [Notater] sends
+    // thinking models down a rabbit hole second-guessing whether the notes
+    // are missing or hidden — a real failure mode we observed in dev where
+    // Qwen 3.5 spent thousands of reasoning tokens on it. Explicit "(ingen)"
+    // tells the model the field is genuinely absent.
+    let notes_block = if body_text.trim().is_empty() {
+        "[Notater]\n(ingen)".to_string()
+    } else {
+        format!("[Notater]\n{body_text}")
     };
+    let transcript_block = if note.transcript.trim().is_empty() {
+        "[Transkripsjon]\n(ingen)".to_string()
+    } else {
+        format!("[Transkripsjon]\n{}", note.transcript)
+    };
+    let user_message = format!("{notes_block}\n\n{transcript_block}");
     // Hard language directive in case the prompt was authored in a different
     // language than the user has now chosen.
     let full_prompt = format!("{prompt}\n\n{}", language_directive(&language));
