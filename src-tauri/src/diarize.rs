@@ -62,8 +62,28 @@ pub async fn diarize_file(
         .map_err(|e| anyhow!("spawn speaker-diarize: {e}"))?;
 
     if !output.status.success() {
+        // FluidAudio prints a wall of `[Profiling]` logs to stderr on every
+        // invocation; without filtering, the entire dump would land in the
+        // user's recording-error toast. The sidecar tags its own final error
+        // line with `humla-error:` so we can pluck it out cleanly. Fall back
+        // to the last non-empty line if no tag is present (older sidecars,
+        // unexpected crashes).
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("speaker-diarize exit {}: {}", output.status, stderr));
+        let clean = stderr
+            .lines()
+            .filter_map(|l| l.strip_prefix("humla-error: "))
+            .last()
+            .map(str::to_string)
+            .or_else(|| {
+                stderr
+                    .lines()
+                    .rev()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| format!("speaker-diarize exit {}", output.status));
+        return Err(anyhow!("{clean}"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);

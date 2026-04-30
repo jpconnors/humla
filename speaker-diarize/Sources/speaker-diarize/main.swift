@@ -171,7 +171,24 @@ func runDiarize(audioPath: String, numSpeakers: Int?) async -> Int32 {
         try await manager.prepareModels()
 
         let url = URL(fileURLWithPath: audioPath)
-        let result = try await manager.process(url)
+        let result: DiarizationResult
+        do {
+            result = try await manager.process(url)
+        } catch OfflineDiarizationError.noSpeechDetected {
+            // FluidAudio raises noSpeechDetected when its segmentation
+            // model finds no speech frames in the audio (very short or
+            // very quiet recordings, sometimes the brief moment between
+            // VAD chunks closing and stop being signalled). This isn't
+            // an error — surface as an empty segment array so the Rust
+            // side's existing "no segments" graceful path handles it
+            // (skip in mic-only / sys-only, single-speaker fallback in
+            // hybrid). Avoids dumping a wall of FluidAudio profiling
+            // logs into the user's recording-error toast.
+            let data = try JSONSerialization.data(withJSONObject: [] as [Any])
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return 0
+        }
 
         // Output shape stays identical to the previous DiarizerManager path:
         // an array of {start_ms, end_ms, speaker_id} that the Rust side can
@@ -188,7 +205,11 @@ func runDiarize(audioPath: String, numSpeakers: Int?) async -> Int32 {
         FileHandle.standardOutput.write(Data("\n".utf8))
         return 0
     } catch {
-        writeStderr("speaker-diarize error: \(error)")
+        // Tag the actual error on its own dedicated line so the Rust
+        // side can pluck it out of FluidAudio's profiling stderr noise
+        // for the user toast. Profiling output goes to stderr in front
+        // of this line; we only want THIS line to reach the UI.
+        writeStderr("humla-error: \(error.localizedDescription)")
         return 1
     }
 }
