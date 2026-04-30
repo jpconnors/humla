@@ -477,9 +477,10 @@ function LanguagePicker({
 }
 
 // Per-note summary provider override. The "auto" option (empty string) clears
-// the override so the global setting kicks in. Display label tracks the
-// effective provider so the user can tell at a glance whether *this* note
-// will go to OpenAI or stay on-device.
+// the override so the global Settings setting kicks in. When the per-note
+// override differs from the global default, the chip border switches to the
+// warning colour so the user can spot that "this note is set to something
+// other than what Settings says" — which was previously a silent footgun.
 function SummaryProviderChip({
   value,
   globalDefault,
@@ -489,20 +490,33 @@ function SummaryProviderChip({
   globalDefault: string;
   onChange: (v: string) => void;
 }) {
+  const globalLabel = globalDefault === "local" ? "Local" : "Cloud";
   const effective = value.length > 0 ? value : globalDefault;
   const display = effective === "local" ? "Local" : "Cloud";
-  const suffix = value.length > 0 ? "" : " · auto";
+  // True when the user has explicitly picked something for this note that
+  // disagrees with the global Settings — typically a leftover from earlier
+  // testing. Surface it visually so they don't get silent local-LLM routing
+  // when they've set Settings to OpenAI.
+  const isOverride = value.length > 0 && value !== globalDefault;
   return (
-    <label className="nd-chip cursor-pointer pr-2">
+    <label
+      className="nd-chip cursor-pointer pr-2"
+      style={isOverride ? { borderColor: "var(--color-warning)" } : undefined}
+      title={
+        isOverride
+          ? `Per-note override active — Settings is set to ${globalLabel}. Pick "From Settings" to defer.`
+          : "Choose where this note's summary runs."
+      }
+    >
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="bg-transparent appearance-none outline-none cursor-pointer uppercase tracking-[0.08em]"
         style={{ fontFamily: "var(--font-mono)" }}
       >
-        <option value="">Summary: {display}{suffix}</option>
-        <option value="openai">Summary: Cloud</option>
-        <option value="local">Summary: Local</option>
+        <option value="">Summary: {display} · From Settings</option>
+        <option value="openai">Summary: Cloud (override)</option>
+        <option value="local">Summary: Local (override)</option>
       </select>
       <span aria-hidden style={{ color: "var(--color-text-muted)" }}>▾</span>
     </label>
