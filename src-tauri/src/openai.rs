@@ -310,7 +310,12 @@ struct OllamaChatRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
     stream: bool,
-    // Ollama 0.4.5+: explicitly disable Qwen 3+ thinking mode.
+    // Ollama 0.6+: bool toggles reasoning for most models (Qwen 3+,
+    // DeepSeek-R1, etc). GPT-OSS is the exception — it expects a string
+    // ("low" | "medium" | "high") and silently ignores booleans. If we
+    // ever default to a GPT-OSS local model we'll need to make this
+    // serde-untagged with both shapes; for Qwen 3.5 / DeepSeek users a
+    // bool is correct.
     think: bool,
     options: OllamaOptions,
 }
