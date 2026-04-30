@@ -172,17 +172,16 @@ pub async fn summarize_with_base(
     transcript: &str,
 ) -> Result<String> {
     let is_local = base_url != BASE;
-    // Qwen 3+ defaults to thinking mode, where the model spends potentially
-    // thousands of tokens reasoning inside <think>...</think> before
-    // answering. For polish/summary work that's pure overhead — multi-minute
-    // latencies and sometimes no final answer at all (we saw 260s →
-    // 0-char output in dev). Appending "/no_think" to the user turn is the
-    // documented way to opt out; non-Qwen models ignore it as plain text.
-    let user_with_no_think = if is_local {
-        format!("{transcript}\n\n/no_think")
-    } else {
-        transcript.to_string()
-    };
+    // For Ollama, route through the native /api/chat endpoint so we can
+    // pass `think: false` and reliably disable Qwen 3+'s thinking mode.
+    // The OpenAI-compat endpoint renders the chat template internally and
+    // strips user-message /no_think directives, so we'd otherwise hang for
+    // many minutes on internal reasoning.
+    if is_local {
+        if let Some(native_base) = ollama_native_url(base_url) {
+            return ollama_native_chat(&native_base, model, system_prompt, transcript).await;
+        }
+    }
     let req = ChatRequest {
         model,
         // Local OpenAI-compat servers accept temperature; reasoning-model
@@ -194,7 +193,7 @@ pub async fn summarize_with_base(
         },
         messages: vec![
             ChatMessage { role: "system", content: system_prompt },
-            ChatMessage { role: "user", content: &user_with_no_think },
+            ChatMessage { role: "user", content: transcript },
         ],
     };
     let http = if is_local { local_client() } else { client() };
@@ -283,6 +282,120 @@ pub async fn summarize_with_base(
                 reasoning_chars
             ));
         }
+        return Err(anyhow!("{model} returned an empty response"));
+    }
+    Ok(content)
+}
+
+/// Try to derive the Ollama native API base URL from an OpenAI-compat URL.
+/// Ollama exposes its own API at `/api/...` and an OpenAI-compat shim at
+/// `/v1/...`; the convention is the same host:port. Returns None for non-
+/// Ollama-shaped URLs (LM Studio at :1234, llama-server, vLLM) — those keep
+/// the OpenAI-compat path.
+fn ollama_native_url(openai_compat_url: &str) -> Option<String> {
+    // Heuristic: Ollama's default port is 11434. If the URL doesn't mention
+    // it, assume the user is on a different runtime (LM Studio :1234, etc.)
+    // and stay on OpenAI-compat. Users can override by pointing
+    // local_llm_base_url at any host:11434.
+    if !openai_compat_url.contains(":11434") {
+        return None;
+    }
+    let trimmed = openai_compat_url.trim_end_matches('/');
+    let stripped = trimmed.strip_suffix("/v1")?;
+    Some(format!("{stripped}/api"))
+}
+
+#[derive(Serialize)]
+struct OllamaChatRequest<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessage<'a>>,
+    stream: bool,
+    // Ollama 0.4.5+: explicitly disable Qwen 3+ thinking mode.
+    think: bool,
+    options: OllamaOptions,
+}
+
+#[derive(Serialize)]
+struct OllamaOptions {
+    temperature: f32,
+}
+
+#[derive(Deserialize)]
+struct OllamaChatResponse {
+    message: OllamaMessage,
+}
+
+#[derive(Deserialize)]
+struct OllamaMessage {
+    content: String,
+}
+
+async fn ollama_native_chat(
+    native_base: &str,
+    model: &str,
+    system_prompt: &str,
+    user_message: &str,
+) -> Result<String> {
+    let url = format!("{native_base}/chat");
+    let req = OllamaChatRequest {
+        model,
+        messages: vec![
+            ChatMessage { role: "system", content: system_prompt },
+            ChatMessage { role: "user", content: user_message },
+        ],
+        stream: false,
+        think: false,
+        options: OllamaOptions { temperature: 0.2 },
+    };
+    let started = std::time::Instant::now();
+    eprintln!(
+        "[llm] POST {url} (ollama-native) model={model} think=false system_chars={} user_chars={}",
+        system_prompt.len(),
+        user_message.len()
+    );
+    let r = local_client()
+        .post(&url)
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| {
+            eprintln!(
+                "[llm] ollama send error after {:?}: timeout={} connect={} body={}",
+                started.elapsed(), e.is_timeout(), e.is_connect(), e
+            );
+            if e.is_timeout() {
+                anyhow!("Timed out after 10 minutes waiting for {url}. Restart Ollama and try again.")
+            } else if e.is_connect() {
+                anyhow!("Couldn't reach {url}. Is `ollama serve` running?")
+            } else {
+                anyhow!("network error talking to {url}: {e}")
+            }
+        })?;
+    let status = r.status();
+    eprintln!("[llm] ollama response {status} after {:?}", started.elapsed());
+    if !status.is_success() {
+        let body = r.text().await.unwrap_or_default();
+        eprintln!("[llm] ollama error body: {body}");
+        return Err(anyhow!("HTTP {status} from {url}: {body}"));
+    }
+    let body_text = r.text().await?;
+    let body: OllamaChatResponse = match serde_json::from_str(&body_text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[llm] could not parse ollama response: {e}\n[llm] body (first 500 chars): {}",
+                &body_text.chars().take(500).collect::<String>()
+            );
+            return Err(anyhow!("unexpected response shape from {url}: {e}"));
+        }
+    };
+    let content = body.message.content;
+    eprintln!(
+        "[llm] ollama success in {:?}, content {} chars",
+        started.elapsed(),
+        content.len()
+    );
+    if content.trim().is_empty() {
         return Err(anyhow!("{model} returned an empty response"));
     }
     Ok(content)
