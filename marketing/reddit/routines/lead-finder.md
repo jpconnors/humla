@@ -82,6 +82,33 @@ For each surfaced thread:
 - Check the sub's promo rules from marketing/reddit/README.md
 - Decide: "promo allowed" / "engagement-only"
 
+## Voice guide for "Your reply" (apply this to every draft)
+
+Michael's writing voice on Reddit:
+
+- **Length: 1–4 sentences.** Usually 2. No essays.
+- **Open with action or soft opinion**, not preamble: "Skip making it...", "I definitely think...", "We've slowly started..."
+- **Frame as opinion, not declaration.** Use: "I've found...", "Worked for me to...", "I'd lean toward...", "My take is...", "Honestly, I'd just..."
+- **Hands-on, not encyclopedic.** One specific detail beats three abstract points.
+- **Casual register.** Contractions everywhere. Trailing rhetorical questions ok. Occasional dry aside ok.
+- **Occasional emoji at the END**: 🙂 👍🏼 😅 🔥. Max one per comment, often zero.
+- **No em-dashes.** Use periods, commas, parentheses.
+- **No bold/italic/headers** in the comment.
+- **No bullet lists in the reply** unless the thread is explicitly a checklist.
+- **For Humla mentions:** disclose maker status in the same sentence ("I'm building Humla, so take this with that grain of salt"). One mention only. No link unless asked.
+
+## Anti-AI pass (run before writing each "Your reply")
+
+- Cut: "actually" / "essentially" / "fundamentally" / "the real question is" / "at its core"
+- Cut: "underscoring" / "highlighting" / "ensuring" / "reflecting" / "showcasing"
+- Cut: "It's not just X — it's Y" structures
+- Cut: "Great question!" / "Hope this helps" / "Let me know"
+- Cut: tailing negations ("no guessing", "no friction")
+- Cut: rule-of-three lists, copula avoidance ("serves as", "functions as")
+- Read out loud — if a sentence feels like a press release, delete.
+
+---
+
 Promo-allowed subs (Humla mention with disclosure ok):
 - r/macapps (BUT only after 10 local karma reached — until then, engagement-only)
 - r/SideProject
@@ -112,9 +139,11 @@ Output: Write the report to marketing/reddit/leads/YYYY-MM-DD.md (today's UTC da
 - **Intent score:** X/10
 - **What they're asking:** [1 sentence]
 - **Humla fit:** [which differentiator addresses their question]
-- **Suggested angle:** [2–3 sentences. Lead with the problem, not the product. Mention Humla once, with disclosure: "I'm the dev — happy to answer questions about [specific thing they asked]."]
-- **Asset opportunity:** [if applicable, suggest a specific Open Recorder clip — e.g., "15s clip showing parallel mic+sys streams and offline diarization on stop"]
-- **DON'T:** [things to avoid in this thread]
+- **Asset opportunity:** [Open Recorder clip suggestion if applicable]
+- **DON'T:** [things to avoid]
+
+**Your reply:**
+> [full draft in Michael's voice. Lead with their problem, not the product. One Humla mention with disclosure ("I'm building Humla — local-first meeting notes for mac" or similar). 1–4 sentences. No link in the first comment unless they explicitly asked for tool names.]
 
 (repeat)
 
@@ -124,7 +153,9 @@ Output: Write the report to marketing/reddit/leads/YYYY-MM-DD.md (today's UTC da
 - **Sub:** r/...
 - **Link:** ...
 - **Why surface:** valuable thread to comment on for visibility/karma without promo
-- **Angle:** [pure value-add response, no Humla]
+
+**Your reply:**
+> [full draft, no Humla mention, pure value-add]
 
 (repeat)
 

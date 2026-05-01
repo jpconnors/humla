@@ -75,13 +75,43 @@ For each surfaced thread, include:
 - Sub + thread title + reddit link
 - Posted Xh ago, current score, current comment count
 - Why it fits Michael's expertise (1 sentence)
-- The specific technical detail Michael should lead with (e.g., "you actually need ScreenCaptureKit, not AVAudioEngine, because system audio routes go through the screen capture API on macOS 13+")
-- Comment angle: 2–3 sentences describing what to address. Do NOT write the full comment — Michael writes that.
-- Things to avoid in this thread (e.g., "don't mention Humla even though it's tempting — this is karma-building")
+- The specific technical detail Michael should lead with
+- Things to avoid in this thread
+- **Your reply** — a full draft comment in Michael's voice that he can paste with minor edits
 
-Critical rules:
+## Voice guide for "Your reply"
+
+Michael's writing voice on Reddit, distilled from his actual comments:
+
+- **Length: 1–4 sentences. Usually 2.** No 200-word essays. If the answer needs more, the answer is wrong for Reddit.
+- **Open with action or soft opinion**, not preamble: "Skip making it read all the files." / "I definitely think it's worth it." / "We've slowly started integrating ai automations." / "I only use API for products and integrations."
+- **Frame as opinion, not declaration.** Use: "I've found...", "Worked for me to...", "I'd lean toward...", "My take is...", "Honestly, I'd just...". Avoid: "The actual cause is...", "The real bottleneck is...", "Here's what's happening..."
+- **Hands-on, not encyclopedic.** One specific detail beats three abstract points. Skip the "(1) do X, (2) do Y, (3) do Z" recipe format — it reads like a tutorial.
+- **Casual register.** Contractions everywhere. Lowercase after periods occasionally fine. Trailing rhetorical questions ok ("How long since you saw the sun??"). Occasional dry aside ok ("The grind doesn't truly start until you hit Submit for Review.").
+- **Occasional emoji at the END of a thought**, not as decoration: 🙂 👍🏼 😅 🔥. Max one per comment, often zero.
+- **No em-dashes.** Michael doesn't use them. Use periods, commas, or parentheses.
+- **No bold/italic/headers** in the comment itself.
+- **No bullet lists in the reply** unless the thread is explicitly a checklist.
+- Sometimes ask back if the answer depends on something the OP didn't say.
+
+## Anti-AI pass (run this before writing the reply)
+
+Before you write each "Your reply", check yourself:
+
+- Am I using "actually" / "essentially" / "fundamentally" / "the real question is"? Cut.
+- Am I using "underscoring" / "highlighting" / "ensuring" / "reflecting"? Cut.
+- Am I writing "It's not just X — it's Y"? Cut.
+- Am I starting with "Great question!" or ending with "Hope this helps"? Delete.
+- Am I tacking a tailing negation ("no guessing", "no friction") onto the end? Rewrite as a real clause or drop.
+- Am I using rule-of-three lists? Reduce to one or two.
+- Am I writing in copula avoidance ("X serves as", "X functions as")? Use "is" / "has".
+- Does it sound like a tutorial? Make it sound like Michael talking to a peer.
+
+After writing, re-read out loud. If a sentence feels like Wikipedia, delete it.
+
+## Critical rules
 - NO Humla mention in any of these comments. Phase 0 is karma-only.
-- Comments should be ≥50 words substantive. Single-sentence drive-bys waste the thread slot.
+- The reply should be substantive enough to land — usually 30–80 words. Single-sentence drive-bys waste the thread slot UNLESS the question is genuinely a one-liner answer.
 - If you find a thread where someone is asking for a tool and Humla actually fits, DO NOT surface it here — note it at the bottom under "Better fit for lead-finder routine".
 
 Output: Write the report to marketing/reddit/karma/YYYY-MM-DD.md (use today's UTC date) using this structure:
@@ -99,9 +129,11 @@ Output: Write the report to marketing/reddit/karma/YYYY-MM-DD.md (use today's UT
 - **Link:** [reddit.com link]
 - **Posted:** Xh ago • [score]↑ • [N] comments
 - **Why this fits:** [1 sentence]
-- **Lead with:** [specific technical detail]
-- **Angle:** [2–3 sentences on what to say]
-- **Don't:** [anything to avoid in this thread]
+- **Lead with:** [specific technical detail or angle]
+- **Don't:** [anything to avoid]
+
+**Your reply:**
+> [full draft comment in Michael's voice, 1–4 sentences usually, opinion-framed, no AI-isms]
 
 (repeat per surfaced thread)
 
