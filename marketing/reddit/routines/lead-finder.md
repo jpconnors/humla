@@ -68,10 +68,21 @@ Filter:
 - Drop posts in r/selfhosted unless the asker explicitly wants a self-hosted server (Humla is local-desktop, not server)
 
 Find an unanswered reply target (most important filter):
-- For each surviving thread, fetch top comments via get_post_details.
-- If OP's question is already answered well by a recommended tool that fits their requirements (and Humla doesn't add a clearly different angle), drop the thread. Showing up as the 4th "you should try X" comment is noise.
-- Prefer threads where OP hasn't gotten a great answer yet, OR where the existing recommendations miss what Humla specifically does (e.g., everyone's recommending bot-based tools when OP wanted no bots).
-- If a sub-comment expresses unmet frustration about an existing recommendation ("I tried that, doesn't work for X"), that's the reply target.
+- For each surviving thread, fetch with `get_post_details` using `comment_depth: 6` and `comment_limit: 100`. The default depth (3) misses sub-thread answers — that's how you accidentally surface threads where the question was already answered in a child comment.
+- Walk the full comment tree, not just top-level comments.
+- If OP's question is already answered well by a recommended tool that fits their requirements (and Humla doesn't add a clearly different angle), drop the thread.
+- For any candidate reply target, walk its children before declaring it unanswered:
+  - If ANY child substantively answers the question (even imperfectly), the target is answered.
+  - If the asker said "thanks", "saved the post", or otherwise acknowledged an answer, the conversation is closed.
+- Prefer threads where OP hasn't gotten a great answer yet, OR where existing recommendations miss what Humla specifically does (e.g., everyone's recommending bot-based tools when OP wanted no bots).
+- If a sub-comment expresses unmet frustration about an existing recommendation ("I tried that, doesn't work for X"), that's the reply target — provided the frustration itself hasn't been addressed.
+
+Verification before surfacing: for the chosen reply target, you must be able to say one of:
+- "Target has 0 children" (cite parent comment + child count)
+- "Target's children are non-substantive: [quote each child]"
+- "Existing answer is wrong/incomplete for [specific reason]"
+
+If you can't honestly fill that in, drop the thread.
 
 Score intent (0–10):
 - +3 if asking a direct question ("does anyone know X?", "looking for Y")
@@ -158,7 +169,7 @@ Output: Write the report to marketing/reddit/leads/YYYY-MM-DD.md (today's UTC da
 - **What they're asking:** [1 sentence]
 - **Humla fit:** [which differentiator addresses their question]
 - **Reply to:** [either "OP" + 1-line quote, or "u/username" + 1-line quote of their comment]
-- **Why unanswered:** [1 sentence — what this specific person still needs that the existing replies didn't give them]
+- **Why unanswered:** [evidence-based. Either "Target has 0 children" / "Children are non-substantive: [quote]" / "Existing answer misses [specific Humla differentiator]". Quote actual child comments. If you can't, drop the thread.]
 - **Asset opportunity:** [Open Recorder clip suggestion if applicable]
 - **DON'T:** [things to avoid]
 

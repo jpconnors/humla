@@ -68,14 +68,27 @@ Steps:
    - Michael (u/tremendousquotes) has already commented (check authors of all comments)
    - It's about politics, drama, or off-topic for the sub
 6. **Find an unanswered reply target** — this is the most important filter. For each surviving thread:
-   - Read OP's question and the top-level comments
-   - If OP's question is already well-answered (a comment with >5 score that genuinely addresses the question, or OP has marked one as solved), do NOT reply to OP. The question is closed; commenting now adds noise, not value.
-   - Look for unanswered sub-questions in the comment tree:
-     - A commenter asking OP a follow-up that OP hasn't responded to
-     - A commenter asking a clarifying question that has 0 replies
+   - Fetch the post with `mcp__Reddit_MCP_Buddy__get_post_details` using `comment_depth: 6` and `comment_limit: 100`. The default depth (3) misses sub-thread answers.
+   - Read OP's question and the full comment tree.
+   - If OP's question is already well-answered (a comment with >5 score that genuinely addresses the question, or OP has marked one as solved), do NOT reply to OP. Question is closed.
+   - For any candidate reply target (OP or a specific commenter), **walk into its children before declaring it unanswered**:
+     - List the direct child comments of the proposed target
+     - For each child, decide: does this substantively answer the question?
+     - If ANY child answers the question (even imperfectly), the target is answered. Drop or pick a different target.
+     - Even if the asker said "thanks" or otherwise acknowledged an answer, the conversation is closed.
+   - Look for genuinely unanswered sub-questions in the comment tree:
+     - A commenter asking OP a follow-up that OP hasn't responded to AND no other commenter answered
+     - A commenter asking a clarifying question that has zero substantive children
      - A commenter expressing confusion or frustration that nobody addressed
-   - If you find one and Michael has expertise to address it, that becomes the reply target.
-   - If neither OP's question nor any sub-comment is unanswered AND fits Michael's expertise, drop the thread. There's no value to add.
+   - If neither OP's question nor any sub-comment is genuinely unanswered AND fits Michael's expertise, drop the thread.
+
+   **Verification before surfacing**: for the chosen reply target, you MUST be able to say one of:
+   - "Reply target has zero direct children" (cite the parent comment + child count from the JSON)
+   - "Reply target's children are non-substantive: [quote of each child]"
+   - "Reply target's existing answer is wrong/incomplete because [specific reason]"
+
+   If you cannot honestly fill that in, drop the thread. Do not surface a thread on inferred or assumed reply counts.
+
 7. Rank surviving threads by: priority sub > recency > unanswered-question potential > expertise match strength.
 8. Pick the top 3–5.
 
@@ -165,7 +178,7 @@ Output: Write the report to marketing/reddit/karma/YYYY-MM-DD.md (use today's UT
 - **Posted:** Xh ago • [score]↑ • [N] comments
 - **Why this fits:** [1 sentence]
 - **Reply to:** [either "OP" + 1-line quote of the question, or "u/username" + 1-line quote of their comment]
-- **Why unanswered:** [1 sentence explaining why this specific question still needs an answer — e.g., "OP's main question has no reply yet" / "u/x asked a clarifying follow-up that nobody's addressed" / "the top reply got the trade-off wrong and OP hasn't acknowledged"]
+- **Why unanswered:** [evidence-based, not asserted. Either: "Target has 0 children." / "Target has N children but they're non-substantive: [brief quote of each]." / "Target has an answer but it's wrong because [specific]." Quote actual child comments — don't paraphrase. If you can't quote concrete evidence, drop the thread.]
 - **Don't:** [anything to avoid]
 
 **Your reply:**
