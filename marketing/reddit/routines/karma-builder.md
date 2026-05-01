@@ -60,7 +60,7 @@ Michael's expertise areas (match threads to these):
 Steps:
 
 1. Run user_analysis on tremendousquotes to capture current karma snapshot.
-2. For each priority sub, browse_subreddit with sort=rising and sort=new (limit=25 each).
+2. For each priority sub, browse_subreddit with sort=rising and sort=new (limit=25 each). browse, not search — for karma-building you want fresh threads regardless of keyword. Any thread Michael can add value to is fair game.
 3. Filter aggressively: only keep threads where Michael's expertise is a genuine fit and the thread has actual engagement potential (>0 score, <50 comments so it's not saturated, posted in last 36h).
 4. For each candidate, fetch the post + top 5 comments via get_post_details to understand the conversation.
 5. Skip threads if:

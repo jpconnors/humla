@@ -32,40 +32,96 @@ Goal: Find Reddit threads from the last 24h where someone is actively asking for
 
 Use the Reddit MCP (Reddit_MCP_Buddy) for all queries.
 
-High-intent query patterns (search each via mcp__Reddit_MCP_Buddy__search_reddit, sort=new, time=day, limit=25):
+## Search strategy (revised after running)
 
-1. "alternative to granola"
-2. "alternative to otter"
-3. "alternative to fathom"
-4. "alternative to fireflies"
-5. "local meeting transcription"
-6. "self hosted meeting notes"
-7. "meeting recorder mac"
-8. "no bot meeting notes"
-9. "privacy meeting transcription"
-10. "system audio transcription mac"
-11. "record system audio mac"
-12. "offline meeting notes"
-13. "whisper meeting"
-14. "meeting notes app mac"
-15. "AI note taker mac"
-16. "transcribe meetings privately"
+Two lessons from real runs:
 
-Also check these specific subs for new posts (browse_subreddit, sort=new, limit=25):
-- r/AiNoteTaker (Michael already commented here recently — keep an eye on follow-ups)
-- r/macapps
-- r/MacOS
-- r/LocalLLaMA
-- r/SideProject
+1. **Reddit-wide keyword search produces mostly noise.** "granola" matches breakfast recipes; "meeting notes" matches every business thread. The MCP's `search_reddit` does loose word-matching by default. Solution: scope every search to specific high-fit subs using the `subreddits` parameter, and use quoted phrases.
+2. **A 24h window is brutal for this niche.** r/AiNoteTaker often goes 24–72h without a new ask. Solution: search with `time=week` (7 days), then post-filter to ≤72h (3 days). De-dup against the prior 3 days' leads files so a single thread doesn't get re-surfaced after Michael's already seen it.
+
+### Per-sub scoped searches
+
+For each target sub, run a small set of intent queries via `mcp__Reddit_MCP_Buddy__search_reddit` with `subreddits: [sub]`, `sort=new`, `time=week`, `limit=25`. The `subreddits` parameter narrows the haystack and makes loose word-matching tolerable.
+
+**r/AiNoteTaker** (high-fit, low traffic — keep going even when subscribers count is small):
+- `"alternative"`
+- `"local"`
+- `"offline"`
+- `"privacy"`
+- `"open source"`
+- `"mac"`
+
+**r/macapps**:
+- `"meeting notes"`
+- `"transcription"`
+- `"granola"`
+- `"otter"`
+- `"recorder"`
+- `"system audio"`
+
+**r/MacOS**:
+- `"transcribe"`
+- `"meeting"` (with intent post-filter — most r/MacOS posts won't be buying intent)
+- `"system audio"`
+
+**r/LocalLLaMA**:
+- `"whisper"` `"meeting"`
+- `"transcription"` `"local"`
+- `"diarization"`
+- `"meeting notes"`
+
+**r/SideProject**:
+- `"meeting notes"`
+- `"transcription"`
+- `"granola"`
+
+**r/sideprojects**:
+- (same as r/SideProject)
+
+**r/buildinpublic**:
+- `"meeting notes"`
+- `"transcription"`
+
+**r/ClaudeCode**, **r/ClaudeAI**: skip the keyword search; instead browse_subreddit `sort=new` and scan titles for transcription / meeting / dictation / Whisper / on-device AI questions. Most leads here come from build-in-public threads where someone is asking about real-time transcription pipelines — Humla is on-topic.
+
+### Reddit-wide fallback (only if all per-sub searches return empty)
+
+If after per-sub searches you have zero candidates, do a small set of Reddit-wide tightly-quoted searches as fallback:
+- `"granola alternative"` (quoted, intent-bearing)
+- `"alternative to otter.ai"` (quoted)
+- `"local meeting transcription"` (quoted)
+- `"no bot meeting notes"` (quoted)
+
+### Time window
+
+- API search uses `time=week` (7 days)
+- Post-filter to threads created within the last **72h**
+- De-dup against the leads files from the prior 3 days (today-1, today-2, today-3 in `marketing/reddit/leads/`)
+
+### Intent post-filter (apply to every candidate)
+
+After collecting candidates, drop any that don't have an intent marker:
+
+- Title or body must contain at least one of: `?`, "looking for", "any recommendations", "anyone know", "anyone tried", "alternative", "switch from", "moving from", "frustrated with", "suggestions", "best for", "should I", "what do you use"
+- Drop announcement posts ("Introducing X", "I built Y", "X v2 is out") — those are competitor launches, not buying intent. Note them in the audit trail and in `intel/competitor-activity.md` for the research routine, then drop from the leads list.
 
 Filter:
 
 - Drop posts that are reviews/comparisons/listicles (not asking, just informing)
 - Drop posts with score < -3 or upvote_ratio < 0.5
 - Drop NSFW
-- Drop posts where u/tremendousquotes is already in the comments (use get_post_details to check)
+- Drop posts where u/tremendousquotes is already in the comments
 - Drop posts in r/privacy or r/consulting (no promo allowed there — surface as engagement-only instead)
 - Drop posts in r/selfhosted unless the asker explicitly wants a self-hosted server (Humla is local-desktop, not server)
+
+De-dup against recent days:
+- List the last 3 days of files in `marketing/reddit/leads/` (today minus 1, 2, 3).
+- For each candidate post, check if its permalink already appears in any of those files. If yes, drop — Michael's already seen it. Don't re-surface.
+
+Empty days are good days:
+- It's normal and expected to surface 0–2 leads on most days. The market doesn't generate high-intent meeting-notes threads at a constant rate.
+- If after filtering there are 0 promo-allowed leads, the report should say so honestly. Do NOT pad with low-intent threads (intent score < 5) just to have something to surface.
+- An empty leads file with a clear audit trail is more useful than a noisy one — it preserves Michael's commenting time for actually-good threads.
 
 Find an unanswered reply target (most important filter):
 
