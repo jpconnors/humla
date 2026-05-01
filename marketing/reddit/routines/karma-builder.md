@@ -65,11 +65,19 @@ Steps:
 4. For each candidate, fetch the post + top 5 comments via get_post_details to understand the conversation.
 5. Skip threads if:
    - Another tool author is already promoting a competing product
-   - The thread is already answered (top comment has >20 score and addresses the question)
    - Michael (u/tremendousquotes) has already commented (check authors of all comments)
    - It's about politics, drama, or off-topic for the sub
-6. Rank surviving threads by: priority sub > recency > engagement potential > expertise match strength.
-7. Pick the top 3–5.
+6. **Find an unanswered reply target** — this is the most important filter. For each surviving thread:
+   - Read OP's question and the top-level comments
+   - If OP's question is already well-answered (a comment with >5 score that genuinely addresses the question, or OP has marked one as solved), do NOT reply to OP. The question is closed; commenting now adds noise, not value.
+   - Look for unanswered sub-questions in the comment tree:
+     - A commenter asking OP a follow-up that OP hasn't responded to
+     - A commenter asking a clarifying question that has 0 replies
+     - A commenter expressing confusion or frustration that nobody addressed
+   - If you find one and Michael has expertise to address it, that becomes the reply target.
+   - If neither OP's question nor any sub-comment is unanswered AND fits Michael's expertise, drop the thread. There's no value to add.
+7. Rank surviving threads by: priority sub > recency > unanswered-question potential > expertise match strength.
+8. Pick the top 3–5.
 
 For each surfaced thread, include:
 - Sub + thread title + reddit link
@@ -87,6 +95,7 @@ Michael's writing voice on Reddit, distilled from his actual comments:
 
 - **Length: 1–3 sentences. Usually 2, often 1.** No 200-word essays. If the answer needs more, the answer is wrong for Reddit.
 - **One reply target only.** Answer the OP's question OR one specific commenter's question — never both. Synthesizing across multiple commenters reads as AI. A real person reading the thread picks the one thing they have to say and says it.
+- **Only reply where there's actual value to add.** If the reply target's question has already been answered well by OP or another commenter, skip. Don't be the 5th person saying the same thing — that's drive-by karma farming and it doesn't even land karma. Look for unanswered sub-comments instead, or drop the thread entirely.
 - **Open with action or soft opinion**, not preamble: "Skip making it read all the files." / "I definitely think it's worth it." / "We've slowly started integrating ai automations." / "I only use API for products and integrations."
 - **Frame as opinion, not declaration.** Use: "I've found...", "Worked for me to...", "I'd lean toward...", "My take is...", "Honestly, I'd just...", "From what I've seen...", "Probably...". Avoid: "The actual cause is...", "The real bottleneck is...", "Here's what's happening..."
 - **Lower confidence by default.** Michael isn't a textbook. Add "probably", "usually", "in my case", "from what I've seen" liberally. If a claim isn't certain, hedge — readers trust hedged claims more than confident ones.
@@ -156,6 +165,7 @@ Output: Write the report to marketing/reddit/karma/YYYY-MM-DD.md (use today's UT
 - **Posted:** Xh ago • [score]↑ • [N] comments
 - **Why this fits:** [1 sentence]
 - **Reply to:** [either "OP" + 1-line quote of the question, or "u/username" + 1-line quote of their comment]
+- **Why unanswered:** [1 sentence explaining why this specific question still needs an answer — e.g., "OP's main question has no reply yet" / "u/x asked a clarifying follow-up that nobody's addressed" / "the top reply got the trade-off wrong and OP hasn't acknowledged"]
 - **Don't:** [anything to avoid]
 
 **Your reply:**

@@ -67,6 +67,12 @@ Filter:
 - Drop posts in r/privacy or r/consulting (no promo allowed there — surface as engagement-only instead)
 - Drop posts in r/selfhosted unless the asker explicitly wants a self-hosted server (Humla is local-desktop, not server)
 
+Find an unanswered reply target (most important filter):
+- For each surviving thread, fetch top comments via get_post_details.
+- If OP's question is already answered well by a recommended tool that fits their requirements (and Humla doesn't add a clearly different angle), drop the thread. Showing up as the 4th "you should try X" comment is noise.
+- Prefer threads where OP hasn't gotten a great answer yet, OR where the existing recommendations miss what Humla specifically does (e.g., everyone's recommending bot-based tools when OP wanted no bots).
+- If a sub-comment expresses unmet frustration about an existing recommendation ("I tried that, doesn't work for X"), that's the reply target.
+
 Score intent (0–10):
 - +3 if asking a direct question ("does anyone know X?", "looking for Y")
 - +2 if naming a specific competitor as a frustration ("Granola is too expensive", "Otter sends my data to OpenAI")
@@ -88,6 +94,7 @@ Michael's writing voice on Reddit:
 
 - **Length: 1–3 sentences.** Usually 2, often 1. No essays.
 - **One reply target only.** Answer the OP's question OR one specific commenter's question — never synthesize across multiple commenters. That's an AI tell. Pick the one thing you'd say if you were skimming the thread.
+- **Only reply where there's actual value.** If the asker's need is already met by an existing recommendation, skip. Showing up to add a 4th tool to a list of 3 already-recommended tools is noise. Reply only when Humla addresses something the existing answers miss (e.g., "everyone said Otter, but you wanted no bots — Humla doesn't need one because it captures system audio directly").
 - **Open with action or soft opinion**, not preamble: "Skip making it...", "I definitely think...", "We've slowly started..."
 - **Frame as opinion, not declaration.** Use: "I've found...", "Worked for me to...", "I'd lean toward...", "My take is...", "Honestly, I'd just...", "From what I've seen...", "Probably..."
 - **Lower confidence by default.** Hedge liberally. Readers trust hedged claims more than confident ones.
@@ -151,6 +158,7 @@ Output: Write the report to marketing/reddit/leads/YYYY-MM-DD.md (today's UTC da
 - **What they're asking:** [1 sentence]
 - **Humla fit:** [which differentiator addresses their question]
 - **Reply to:** [either "OP" + 1-line quote, or "u/username" + 1-line quote of their comment]
+- **Why unanswered:** [1 sentence — what this specific person still needs that the existing replies didn't give them]
 - **Asset opportunity:** [Open Recorder clip suggestion if applicable]
 - **DON'T:** [things to avoid]
 
