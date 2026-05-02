@@ -8,7 +8,9 @@ This is **not** a daily routine. Run it:
 - Quarterly thereafter for a refresh
 - After any major Humla launch (the conversation may shift)
 
-**Execution:** Claude Desktop **Local** Routine on **Manual** schedule. Folder: humla project. Trigger by hand from the Routines tab.
+**Execution:** Claude Desktop **Local** Routine on **Weekly** schedule with a built-in skip-guard. The guard makes the routine exit immediately if the last scan was less than 85 days ago, so the effective cadence is quarterly. Local Routines don't expose a Monthly/Quarterly option in the schedule picker, so this is the cleanest workaround.
+
+(Alternative: keep schedule as **Manual** and trigger by hand every ~90 days via a calendar reminder. Both work; pick what fits your workflow.)
 
 ---
 
@@ -21,7 +23,7 @@ This is **not** a daily routine. Run it:
 5. **Select folder:** `~/Documents/Development/Claude Code/humla`
 6. **Worktree:** off
 7. **Ask permissions:** Default
-8. **Schedule:** Manual
+8. **Schedule:** Weekly (the prompt's skip-guard makes the effective cadence quarterly — see Step 0 in the Instructions block below)
 
 ---
 
@@ -30,7 +32,21 @@ This is **not** a daily routine. Run it:
 ```
 You are running the Humla historical-scan routine.
 
-Goal: 60-day sweep of relevant Reddit history. Three outputs:
+Goal: 60-day sweep of relevant Reddit history. Three outputs written to disk in marketing/reddit/intel/.
+
+## Step 0 — Quarterly skip-guard (run this FIRST)
+
+This routine is scheduled Weekly in Claude Desktop because the schedule picker has no Quarterly option, but the actual cadence is quarterly via this guard. A weekly fire-and-skip costs nothing.
+
+Before doing any work:
+
+1. List files in `marketing/reddit/intel/` matching `historical-scan-*.md` (use ls or Glob).
+2. Parse the YYYY-MM-DD date from the most recent filename.
+3. Compute days since that date.
+4. If days < 85: exit IMMEDIATELY with a single-line message: `Skipped: last scan was N days ago (YYYY-MM-DD). Next quarterly run in M days.` Do not run the scan. Do not write any output files. Do not call any Reddit APIs.
+5. If days ≥ 85, OR no prior scan file exists: proceed.
+
+## Outputs (when not skipping)
 
 1. marketing/reddit/intel/historical-scan-YYYY-MM-DD.md — pattern intel + competitor mentions + evergreen reply candidates
 2. marketing/reddit/intel/_seen-permalinks.txt — flat list of every thread permalink found, for de-dup priming. Append, don't overwrite if file exists.
