@@ -78,10 +78,13 @@ The exact field values for each routine are in the corresponding `routines/*.md`
 
 | Routine | When | UI schedule |
 |---|---|---|
+| `humla-historical-scan` | one-shot bootstrap, then quarterly | Manual |
 | `humla-karma-builder` | daily 9am | Daily at 09:00 |
 | `humla-lead-finder` | daily 12pm | Daily at 12:00 |
 | `humla-research-monday` | Mondays 9am | Weekly → Monday 09:00 |
 | `humla-draft-friday` | Fridays 2pm | Weekly → Friday 14:00 |
+
+Run `humla-historical-scan` first (manually) before enabling the daily routines — it populates `intel/_seen-permalinks.txt` for de-dup and gives the drafts routine pattern intel to work from.
 
 All times are in your local timezone (Europe/Oslo). Local Routines respect local time, no UTC conversion needed.
 

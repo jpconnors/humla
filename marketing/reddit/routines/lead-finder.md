@@ -114,9 +114,11 @@ Filter:
 - Drop posts in r/privacy or r/consulting (no promo allowed there — surface as engagement-only instead)
 - Drop posts in r/selfhosted unless the asker explicitly wants a self-hosted server (Humla is local-desktop, not server)
 
-De-dup against recent days:
+De-dup against recent days + bootstrap list:
 - List the last 3 days of files in `marketing/reddit/leads/` (today minus 1, 2, 3).
-- For each candidate post, check if its permalink already appears in any of those files. If yes, drop — Michael's already seen it. Don't re-surface.
+- Also read `marketing/reddit/intel/_seen-permalinks.txt` if it exists (populated by the historical-scan routine).
+- For each candidate post, check if its permalink appears in any of those sources. If yes, drop — already seen.
+- Append today's surfaced permalinks to `_seen-permalinks.txt` (deduplicated) so future runs don't re-surface them either.
 
 Empty days are good days:
 - It's normal and expected to surface 0–2 leads on most days. The market doesn't generate high-intent meeting-notes threads at a constant rate.
