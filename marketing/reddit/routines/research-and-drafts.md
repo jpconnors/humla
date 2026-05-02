@@ -6,7 +6,7 @@
 - Mondays 9am Europe/Oslo — research scan
 - Fridays 14:00 Europe/Oslo — draft
 
-**Execution:** Two separate Claude Desktop **Local** Routines. Folder: humla project. Uses local Reddit MCP.
+**Execution:** Two separate Claude Desktop **Local** Routines. Folder: humla project. Uses the local `marketing/reddit/lib/fetch.py` helper for all Reddit calls (Reddit's policy change made the MCP's auth path unusable; we hit reddit.com's `.json` endpoints directly with a UA string + on-disk cache).
 
 **Output:** Weekly intel goes to `marketing/reddit/research/`. Drafts go to `marketing/reddit/drafts/`.
 
@@ -28,7 +28,14 @@ You are running the Humla weekly research routine (Monday edition) for u/tremend
 
 Goal: Build situational awareness of what's working in target subs, what competitors are doing, and what topics Humla should engage with this week. NO drafting today — just intel.
 
-Use the Reddit MCP (Reddit_MCP_Buddy).
+Use the `marketing/reddit/lib/fetch.py` helper for all Reddit calls. Run from the repo root via Bash:
+
+- `python3 marketing/reddit/lib/fetch.py browse <sub> --sort top --time week --limit 25` — top of the week in a sub
+- `python3 marketing/reddit/lib/fetch.py search "<query>" --sort new --time week --limit 25` — Reddit-wide search
+- `python3 marketing/reddit/lib/fetch.py search-sub <sub> "<query>" --time week` — keyword search inside one sub
+- `python3 marketing/reddit/lib/fetch.py tree <sub> <post_id> --print` — full nested comment tree
+
+Output is JSON on stdout (except `tree --print`). Pipe to `jq` for filtering. Cache: `~/.cache/humla-reddit/`, 10-min TTL; pass `--no-cache` to bypass.
 
 Steps:
 
@@ -37,7 +44,7 @@ First, read:
 - `marketing/reddit/README.md` "Pain point → Humla differentiator map" — the drafts routine should pick weekly topics that address recurring pain points, not invent new angles
 - `marketing/reddit/intel/recurring-asks.md` if it exists — clustered question patterns from the latest historical scan; pick topics that hit a high-frequency cluster
 
-1. Top of the week in Tier 1 subs (browse_subreddit, sort=top, time=week, limit=25):
+1. Top of the week in Tier 1 subs (`browse <sub> --sort top --time week --limit 25`):
    - r/macapps
    - r/LocalLLaMA
    - r/SideProject
@@ -56,7 +63,7 @@ First, read:
    - Length, formatting, image/video use, flair
    - Top comment sentiment
 
-3. Competitor mentions — search across Reddit (last week) via search_reddit, sort=new, time=week:
+3. Competitor mentions — search across Reddit (last week) via `search "<query>" --sort new --time week`:
    - "Granola"
    - "Otter.ai"
    - "Fathom"
@@ -136,7 +143,7 @@ You are running the Humla weekly draft routine (Friday edition).
 
 Goal: Take Monday's research and produce 1 publishable Reddit post draft, ready for Michael to review, edit, and ship next week.
 
-Use the Reddit MCP for any verification searches needed.
+Use the `marketing/reddit/lib/fetch.py` helper for any verification searches needed (`browse`, `search`, `search-sub`, `tree`). See the Monday section for the command surface.
 
 Steps:
 

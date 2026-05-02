@@ -4,7 +4,7 @@
 
 **Cadence:** Daily, 12pm Europe/Oslo.
 
-**Execution:** Claude Desktop **Local** Routine. Folder: humla project. Uses local Reddit MCP.
+**Execution:** Claude Desktop **Local** Routine. Folder: humla project. Uses the local `marketing/reddit/lib/fetch.py` helper for all Reddit calls (Reddit's policy change made the MCP's auth path unusable; we hit reddit.com's `.json` endpoints directly with a UA string + on-disk cache).
 
 **Difference vs karma-builder:** Karma-builder targets threads where Michael adds technical value with **no Humla mention**. Lead-finder targets threads where the asker is looking for a solution Humla provides — Humla can be mentioned (with disclosure) **only in subs that allow it**.
 
@@ -30,14 +30,22 @@ You are running the Humla daily lead-finder routine for u/tremendousquotes.
 
 Goal: Find Reddit threads from the last 24h where someone is actively asking for what Humla provides, score them by intent strength, and surface the top candidates with engagement angles.
 
-Use the Reddit MCP (Reddit_MCP_Buddy) for all queries.
+Use the `marketing/reddit/lib/fetch.py` helper for all Reddit calls. Run from the repo root via Bash:
+
+- `python3 marketing/reddit/lib/fetch.py browse <sub> --sort new --limit 25` — list a sub's newest posts
+- `python3 marketing/reddit/lib/fetch.py search-sub <sub> "<query>" --time week --limit 25` — keyword search inside one sub (uses `restrict_sr=1`)
+- `python3 marketing/reddit/lib/fetch.py search "<query>" --time week --limit 25` — Reddit-wide keyword search
+- `python3 marketing/reddit/lib/fetch.py tree <sub> <post_id> --print` — print the full nested comment tree (the verification path that used to need a curl + python3 heredoc)
+- `python3 marketing/reddit/lib/fetch.py tree <sub> <post_id>` — same, but JSON list of `{id, author, score, body, depth, num_replies}` for programmatic checks
+
+Output is JSON on stdout for everything except `tree --print`. Pipe to `jq` if you want to filter without parsing in Python. Cache lives at `~/.cache/humla-reddit/` with a 10-min TTL — pass `--no-cache` to bypass when you're verifying something that just changed.
 
 ## Search strategy
 
 Two lessons from real runs:
 
-1. **Reddit-wide keyword search produces mostly noise.** "granola" matches breakfast recipes; "meeting notes" matches every business thread. The MCP's `search_reddit` does loose word-matching by default. Solution: scope every search to specific high-fit subs using the `subreddits` parameter.
-2. **A 24h window is brutal for this niche.** r/AiNoteTaker often goes 24–72h without a new ask. Solution: search with `time=week` (7 days), then post-filter to ≤72h (3 days). De-dup against prior days' leads files so a single thread doesn't get re-surfaced after Michael's already seen it.
+1. **Reddit-wide keyword search produces mostly noise.** "granola" matches breakfast recipes; "meeting notes" matches every business thread. Reddit's `q=` does loose word-matching by default. Solution: scope every search to a specific high-fit sub via `search-sub`.
+2. **A 24h window is brutal for this niche.** r/AiNoteTaker often goes 24–72h without a new ask. Solution: search with `--time week` (7 days), then post-filter to ≤72h (3 days). De-dup against prior days' leads files so a single thread doesn't get re-surfaced after Michael's already seen it.
 
 ### Read subreddits.md and README first
 
@@ -49,9 +57,9 @@ If subreddits.md has new subs added since the last run, this routine picks them 
 
 ### Per-sub scoped searches
 
-For each Tier 1 + Tier 2 sub in subreddits.md with `Status: unlocked`, run search_reddit with `subreddits: [sub]`, `sort=new`, `time=week`, `limit=25`, using the query patterns listed in that sub's entry. For Tier 2 subs marked `Status: unverified`, first verify rules via the curl + json.tool pattern documented in subreddits.md before treating them as promo-allowed.
+For each Tier 1 + Tier 2 sub in subreddits.md with `Status: unlocked`, run the helper's `search-sub <sub> "<query>" --sort new --time week --limit 25` for each query pattern listed in that sub's entry. For Tier 2 subs marked `Status: unverified`, first verify rules via the curl + json.tool pattern documented in subreddits.md before treating them as promo-allowed.
 
-**r/ClaudeCode and r/ClaudeAI special handling**: skip keyword search for these; instead `browse_subreddit sort=new` and scan titles for transcription / meeting / dictation / Whisper / on-device AI questions. These subs' value is build-in-public threads where someone is asking about real-time transcription pipelines.
+**r/ClaudeCode and r/ClaudeAI special handling**: skip keyword search for these; instead run `browse <sub> --sort new` and scan titles for transcription / meeting / dictation / Whisper / on-device AI questions. These subs' value is build-in-public threads where someone is asking about real-time transcription pipelines.
 
 ### Reddit-wide fallback (only if all per-sub searches return empty)
 
@@ -124,31 +132,17 @@ Empty days are good days:
 
 Find an unanswered reply target (most important filter):
 
-**CRITICAL — the Reddit MCP does NOT return nested replies.** It returns top-level comments only, even with `comment_depth: 6`. To verify threading, you must use Reddit's raw JSON API via Bash:
+**Walk the full comment tree before declaring a thread unanswered.** Use the helper:
 
 ```bash
-UA="humla-research/0.1 by u/tremendousquotes"
-curl -sL -A "$UA" "https://www.reddit.com/r/SUBREDDIT/comments/POST_ID.json?depth=10&limit=200" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-comments = data[1]['data']['children']
-def walk(c, depth=0):
-    d = c.get('data', {})
-    if c.get('kind') != 't1': return
-    body = d.get('body','').replace(chr(10),' ')[:200]
-    print(f'{\"  \"*depth}- [{d.get(\"id\")}] u/{d.get(\"author\")} [{d.get(\"score\")}↑]: {body}')
-    replies = d.get('replies')
-    if replies and isinstance(replies, dict):
-        for child in replies.get('data',{}).get('children',[]):
-            walk(child, depth+1)
-for c in comments:
-    walk(c)
-"
+python3 marketing/reddit/lib/fetch.py tree <SUB> <POST_ID> --print
 ```
+
+This prints the full nested tree as `<indent>- [comment_id] u/author [score↑]: body` lines. For programmatic checks (e.g., "does this comment have any children?"), drop `--print` to get a JSON list of `{id, author, score, body, depth, parent_id, num_replies}`.
 
 Use this output as ground truth.
 
-- Walk the full comment tree from the raw JSON, not the MCP top-level list.
+- Walk the full comment tree from the helper, not just the post listing.
 - If OP's question is already answered well by a recommended tool that fits their requirements (and Humla doesn't add a clearly different angle), drop the thread.
 - For any candidate reply target, walk its children before declaring it unanswered:
   - If ANY child substantively answers the question (even imperfectly), the target is answered.
@@ -156,7 +150,7 @@ Use this output as ground truth.
 - Prefer threads where OP hasn't gotten a great answer yet, OR where existing recommendations miss what Humla specifically does (e.g., everyone's recommending bot-based tools when OP wanted no bots).
 - If a sub-comment expresses unmet frustration about an existing recommendation ("I tried that, doesn't work for X"), that's the reply target — provided the frustration itself hasn't been addressed.
 
-Verification before surfacing: cite the reply target's comment ID from the raw JSON walk above, then say one of:
+Verification before surfacing: cite the reply target's comment ID from the helper's tree output, then say one of:
 - "Comment ID X has 0 children in the raw JSON"
 - "Comment ID X's children are: [list child IDs + quotes]. None substantively answer."
 - "Comment ID X has answer Y but it misses [specific Humla differentiator]"
@@ -200,7 +194,7 @@ Michael's writing voice on Reddit:
 
 The reply must only claim experience Michael actually has. Verify against:
 - `CLAUDE.md` in this repo (Michael's technical history)
-- His Reddit comment history via user_analysis on tremendousquotes
+- His Reddit comment history — fetch the latest 25 comments via `curl -sL -A "humla-research/0.1 by u/tremendousquotes" "https://www.reddit.com/user/tremendousquotes/comments.json?limit=25" | python3 -m json.tool`
 - His public repos (humla, git-timetrack)
 
 If you can't verify a claim, drop the experience phrasing and reframe as opinion. Better to write "probably" than to fabricate "I've shipped this for months."

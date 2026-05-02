@@ -50,6 +50,8 @@ Every comment and post should reinforce this identity, not just promote the prod
 marketing/reddit/
 ├── README.md              # this file
 ├── subreddits.md          # central registry — single source of truth for sub list
+├── lib/                   # shared helpers used by every routine
+│   └── fetch.py           # Reddit JSON scraper — replaces Reddit_MCP_Buddy
 ├── routines/              # the four loop specs (committed to git)
 │   ├── karma-builder.md
 │   ├── lead-finder.md
@@ -61,6 +63,26 @@ marketing/reddit/
 ├── leads/                 # daily lead-finder output (gitignored)
 └── intel/                 # competitor intel + Open Recorder asset library (gitignored)
 ```
+
+## Reddit access — `lib/fetch.py`
+
+All four routines call Reddit through `marketing/reddit/lib/fetch.py`. We used the `Reddit_MCP_Buddy` MCP until Reddit's policy change blocked the auth path the MCP relied on; the helper hits reddit.com's `.json` endpoints directly with a UA string and a small on-disk cache.
+
+Command surface (run from the repo root):
+
+```bash
+python3 marketing/reddit/lib/fetch.py browse <sub> --sort {hot|new|rising|top|controversial} [--time week] [--limit 25]
+python3 marketing/reddit/lib/fetch.py search-sub <sub> "<query>" [--sort new] [--time week] [--limit 25]
+python3 marketing/reddit/lib/fetch.py search "<query>" [--sort new] [--time week] [--limit 25]
+python3 marketing/reddit/lib/fetch.py post <sub> <post_id>
+python3 marketing/reddit/lib/fetch.py tree <sub> <post_id> [--depth 10] [--limit 200] [--print]
+```
+
+- Output is JSON on stdout (pipe to `jq`), except `tree --print` which prints an indented human-readable tree.
+- Cache lives at `~/.cache/humla-reddit/` with a 10-minute TTL. Pass `--no-cache` (top-level) to bypass.
+- The helper exposes `browse_subreddit`, `search_subreddit`, `search_reddit`, `get_post_with_comments`, and `walk_comments` as Python functions if you want to import it from a longer script — see the docstring at the top of `fetch.py`.
+
+Practical Reddit unauth limit is ~60 req/min per IP. The cache + sequential calls keep us well under that for normal routine runs.
 
 `marketing/.gitignore` keeps the dynamic outputs local. The specs are versioned so you can tune them and see what changed.
 
@@ -82,7 +104,7 @@ All three loops run as **Local Routines** in Claude Desktop:
 
 - Routines tab → New routine → **Local** (not Remote)
 - Local routines run on your machine while it's awake
-- They have full access to your local MCPs (Reddit_MCP_Buddy, Obsidian, etc.)
+- They have full access to your local MCPs (Obsidian, etc.) and to `marketing/reddit/lib/fetch.py` via Bash
 - Output writes directly to your filesystem — no git roundtrip needed
 - "Worktree" off for these (we want the writes to land in the main tree)
 

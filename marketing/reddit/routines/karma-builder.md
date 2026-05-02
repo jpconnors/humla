@@ -4,7 +4,7 @@
 
 **Cadence:** Daily, 9am Europe/Oslo.
 
-**Execution:** Claude Desktop **Local** Routine. Folder: humla project. Uses local Reddit MCP (`Reddit_MCP_Buddy`).
+**Execution:** Claude Desktop **Local** Routine. Folder: humla project. Uses the local `marketing/reddit/lib/fetch.py` helper for all Reddit calls (Reddit's policy change made the MCP's auth path unusable; we hit reddit.com's `.json` endpoints directly with a UA string + on-disk cache).
 
 ---
 
@@ -28,10 +28,24 @@ You are running the Humla daily karma-builder routine for u/tremendousquotes.
 
 Goal: Find 3–5 threads in priority subs where Michael can comment with technical substance and earn karma. NO Humla promotion. Pure helpfulness.
 
-Use the Reddit MCP (Reddit_MCP_Buddy) for all Reddit queries:
-- mcp__Reddit_MCP_Buddy__browse_subreddit (sort=rising, sort=new) for each sub
-- mcp__Reddit_MCP_Buddy__get_post_details on candidates to read top comments
-- mcp__Reddit_MCP_Buddy__user_analysis on tremendousquotes once at start to get current karma
+Use the `marketing/reddit/lib/fetch.py` helper for all Reddit calls. Run from the repo root via Bash:
+
+- `python3 marketing/reddit/lib/fetch.py browse <sub> --sort rising --limit 25` — rising posts in a sub
+- `python3 marketing/reddit/lib/fetch.py browse <sub> --sort new --limit 25` — newest posts in a sub
+- `python3 marketing/reddit/lib/fetch.py post <sub> <post_id>` — fetch one post's metadata (no comments)
+- `python3 marketing/reddit/lib/fetch.py tree <sub> <post_id> --print` — print the full nested comment tree for a candidate
+
+Output is JSON on stdout for everything except `tree --print`. Cache lives at `~/.cache/humla-reddit/` with a 10-min TTL — pass `--no-cache` to bypass when verifying something that just changed.
+
+The helper does not expose a "user analysis" call. To capture Michael's current karma snapshot, run:
+
+```bash
+curl -sL -A "humla-research/0.1 by u/tremendousquotes" \
+  "https://www.reddit.com/user/tremendousquotes/about.json" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(f\"link: {d['link_karma']} comment: {d['comment_karma']}\")"
+```
+
+Per-sub local karma isn't exposed by the public API; estimate it from recent comment scores in the target sub via `browse <sub> --sort new` + manual scan, or track it manually in the report.
 
 Read `marketing/reddit/subreddits.md` at the start of every run. That file is the single source of truth for which subs to monitor and what the rules are. The list below is a prioritized derivation — when subreddits.md is updated, this routine picks up the change automatically on the next run.
 
@@ -66,41 +80,25 @@ Michael's expertise areas (match threads to these):
 
 Steps:
 
-1. Run user_analysis on tremendousquotes to capture current karma snapshot.
-2. For each priority sub, browse_subreddit with sort=rising and sort=new (limit=25 each). browse, not search — for karma-building you want fresh threads regardless of keyword. Any thread Michael can add value to is fair game.
-3. Filter aggressively: only keep threads where Michael's expertise is a genuine fit and the thread has actual engagement potential (>0 score, <50 comments so it's not saturated, posted in last 36h).
-4. For each candidate, fetch the post + top 5 comments via get_post_details to understand the conversation.
+1. Capture Michael's current karma snapshot via the curl + about.json one-liner above. Note total link/comment karma; track per-sub estimate manually if you have last week's number.
+2. For each priority sub, run `browse <sub> --sort rising` and `browse <sub> --sort new` (limit=25 each). Browse, not search — for karma-building you want fresh threads regardless of keyword. Any thread Michael can add value to is fair game.
+3. Filter aggressively: only keep threads where Michael's expertise is a genuine fit and the thread has actual engagement potential (>0 score, <50 comments so it's not saturated, posted in last 36h — check `created_utc`).
+4. For each candidate, run `tree <sub> <post_id> --print` to read the full conversation (post body is in the listing JSON; the tree gives you the comments).
 5. Skip threads if:
    - Another tool author is already promoting a competing product
-   - Michael (u/tremendousquotes) has already commented (check authors of all comments)
+   - Michael (u/tremendousquotes) has already commented (check authors in the tree output)
    - It's about politics, drama, or off-topic for the sub
 6. **Find an unanswered reply target** — this is the most important filter. For each surviving thread:
 
-   **CRITICAL — the Reddit MCP does NOT return nested replies.** It only gives top-level comments, even with `comment_depth: 6`. To see the actual threaded conversation, you MUST use Reddit's raw JSON API via Bash. Run this for each candidate thread:
+   Run the helper's tree command:
 
    ```bash
-   UA="humla-research/0.1 by u/tremendousquotes"
-   curl -sL -A "$UA" "https://www.reddit.com/r/SUBREDDIT/comments/POST_ID.json?depth=10&limit=200" | python3 -c "
-   import json, sys
-   data = json.load(sys.stdin)
-   comments = data[1]['data']['children']
-   def walk(c, depth=0):
-       d = c.get('data', {})
-       if c.get('kind') != 't1': return
-       body = d.get('body','').replace(chr(10),' ')[:200]
-       print(f'{\"  \"*depth}- [{d.get(\"id\")}] u/{d.get(\"author\")} [{d.get(\"score\")}↑]: {body}')
-       replies = d.get('replies')
-       if replies and isinstance(replies, dict):
-           for child in replies.get('data',{}).get('children',[]):
-               walk(child, depth+1)
-   for c in comments:
-       walk(c)
-   "
+   python3 marketing/reddit/lib/fetch.py tree <SUB> <POST_ID> --print
    ```
 
-   This prints the full nested tree with comment IDs, authors, scores, and body excerpts. Use this output as the ground truth for whether a comment has children.
+   This prints the full nested tree as `<indent>- [comment_id] u/author [score↑]: body` lines. For programmatic checks (e.g., "does comment X have any children?"), drop `--print` to get a JSON list of `{id, author, score, body, depth, parent_id, num_replies}`.
 
-   - Read OP's question and the full comment tree from the raw JSON output.
+   - Read OP's question and the full comment tree from the helper output.
    - If OP's question is already well-answered (a comment with >5 score that genuinely addresses the question, or OP has marked one as solved), do NOT reply to OP. Question is closed.
    - For any candidate reply target (OP or a specific commenter), **walk into its children before declaring it unanswered**:
      - List the direct child comments of the proposed target
@@ -113,12 +111,12 @@ Steps:
      - A commenter expressing confusion or frustration that nobody addressed
    - If neither OP's question nor any sub-comment is genuinely unanswered AND fits Michael's expertise, drop the thread.
 
-   **Verification before surfacing**: cite the comment ID of the reply target from the raw JSON output, then say one of:
-   - "Comment ID X has 0 children in the raw JSON tree"
-   - "Comment ID X's children are: [list child IDs + brief quotes from the tree printout above]. None substantively answer the question."
+   **Verification before surfacing**: cite the comment ID of the reply target from the helper's tree output, then say one of:
+   - "Comment ID X has 0 children in the tree output"
+   - "Comment ID X's children are: [list child IDs + brief quotes]. None substantively answer the question."
    - "Comment ID X has a substantive answer (ID Y by u/Z) but it's wrong because [specific]"
 
-   If you cannot point to a specific comment ID and quote what was or wasn't there, drop the thread. The raw JSON walk above is the ground truth — if the routine surfaces a thread without consulting it, the verification is invalid.
+   If you cannot point to a specific comment ID and quote what was or wasn't there, drop the thread. The helper's tree output is the ground truth — if the routine surfaces a thread without consulting it, the verification is invalid.
 
 7. Rank surviving threads by: priority sub > recency > unanswered-question potential > expertise match strength.
 8. Pick the top 3–5.
@@ -156,7 +154,7 @@ Michael's writing voice on Reddit, distilled from his actual comments:
 The reply must only claim experience Michael actually has. Sources of truth:
 
 - `CLAUDE.md` in this repo — Michael's documented technical history (Tauri/Rust app, notarytool with `.env.notarise`, whisper-rs + Metal, ScreenCaptureKit for system audio, FluidAudio CoreML diarization, etc.)
-- His Reddit comment history (use `mcp__Reddit_MCP_Buddy__user_analysis` on `tremendousquotes` to see what he's said publicly)
+- His Reddit comment history — fetch the latest 25 comments via `curl -sL -A "humla-research/0.1 by u/tremendousquotes" "https://www.reddit.com/user/tremendousquotes/comments.json?limit=25" | python3 -m json.tool` (no helper subcommand for this — it's a one-shot lookup)
 - His public repos (humla, git-timetrack, tremendous-quotes-app)
 
 If the routine wants to write "I've used X for months" or "I shipped Y this way," it must verify the claim against these sources first. If it can't verify, drop the experience claim and reframe as opinion only.

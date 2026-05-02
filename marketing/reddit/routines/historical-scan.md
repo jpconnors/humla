@@ -52,15 +52,21 @@ Before doing any work:
 2. marketing/reddit/intel/_seen-permalinks.txt — flat list of every thread permalink found, for de-dup priming. Append, don't overwrite if file exists.
 3. marketing/reddit/intel/recurring-asks.md — categorized list of recurring question patterns
 
-Use the Reddit MCP for browsing/searching, and Reddit's raw .json API for verifying threading on candidate threads (same curl + python3 pattern as lead-finder.md).
+Use the `marketing/reddit/lib/fetch.py` helper for all Reddit calls (Reddit's policy change made the MCP's auth path unusable; we hit reddit.com's `.json` endpoints directly with a UA string + on-disk cache):
+
+- `python3 marketing/reddit/lib/fetch.py search-sub <sub> "<query>" --sort top --time year --limit 100` — keyword-scoped search inside one sub over the past year
+- `python3 marketing/reddit/lib/fetch.py browse <sub> --sort top --time year --limit 100` — top-of-year sweep with no keyword
+- `python3 marketing/reddit/lib/fetch.py tree <sub> <post_id> --print` — full nested comment tree for verifying threading
+
+Output is JSON on stdout (except `tree --print`). Cache: `~/.cache/humla-reddit/`, 10-min TTL.
 
 ## Per-sub scan
 
 Read `marketing/reddit/subreddits.md` first. The historical scan covers the union of Tier 1, Tier 2, and Tier 3 (60-day window). Tier 4 is also scanned, but only for engagement-only candidates and competitor-activity intel.
 
-For each target sub, run targeted searches via `mcp__Reddit_MCP_Buddy__search_reddit` with `subreddits=[sub]`, `sort=top`, `time=year`, `limit=100`, using the per-sub query patterns from each sub's "Query patterns (lead-finder)" field in subreddits.md. Then post-filter to the last 60 days using `created_utc`. (time=year then post-filter — Reddit's API doesn't have a 60-day option.)
+For each target sub, run `search-sub <sub> "<query>" --sort top --time year --limit 100` for each query pattern from that sub's "Query patterns (lead-finder)" field in subreddits.md. Then post-filter to the last 60 days using `created_utc`. (time=year then post-filter — Reddit's API doesn't have a 60-day option.)
 
-For r/AiNoteTaker specifically, also run `browse_subreddit sort=top time=year limit=100` (no keyword) to catch posts that don't match any specific keyword — this sub is small enough that a full sweep is feasible and worth it.
+For r/AiNoteTaker specifically, also run `browse AiNoteTaker --sort top --time year --limit 100` (no keyword) to catch posts that don't match any specific keyword — this sub is small enough that a full sweep is feasible and worth it.
 
 If a sub in the registry is marked `Status: unverified`, fetch its rules JSON via curl first and update subreddits.md with the verified data before treating the sub as promo-allowed.
 
@@ -71,7 +77,7 @@ When the registry adds new subs (Michael discovers them), the next historical-sc
 - Drop posts older than 60 days (post-filter using created_utc)
 - Drop NSFW
 - Drop posts with score ≤ 0
-- Drop posts where Michael has already commented (check via get_post_details + raw JSON walk)
+- Drop posts where Michael has already commented (check via `tree <sub> <post_id>` and grep for `u/tremendousquotes`)
 - Keep both intent posts (asking) and announcement posts (competitor launches) — they go to different sections
 
 ## Categorize each surviving thread
@@ -81,7 +87,7 @@ For each thread, decide which bucket:
 A. **Evergreen reply candidate** — meets ALL of:
    - Asking question (intent marker present in title/body)
    - Has substantive engagement (≥3 comments, ≥3 score)
-   - Doesn't have a definitive accepted answer (verify via raw JSON walk — same pattern as lead-finder)
+   - Doesn't have a definitive accepted answer (verify via `tree <sub> <post_id> --print` — same pattern as lead-finder)
    - Posted within last 30 days (older than that, even great replies get buried)
    - Sub allows promo (per marketing/reddit/README.md)
 
@@ -110,7 +116,7 @@ For each (sorted by intent strength + recency):
 - **Link:** [permalink]
 - **Posted:** [date], [score]↑, [N] comments
 - **What they're asking:** [1 sentence]
-- **Why still engageable:** [evidence-based, citing comment ID counts from raw JSON]
+- **Why still engageable:** [evidence-based, citing comment ID counts from the helper's tree output]
 - **Humla fit:** [which differentiator]
 - **Reply target:** [OP or u/username + quote]
 - **Suggested angle:** [1–2 sentences. Do NOT draft the full reply yet — Michael decides which of these to act on first, then runs each through the humanizer pass manually or via a follow-up routine.]
