@@ -39,13 +39,11 @@ Two lessons from real runs:
 1. **Reddit-wide keyword search produces mostly noise.** "granola" matches breakfast recipes; "meeting notes" matches every business thread. The MCP's `search_reddit` does loose word-matching by default. Solution: scope every search to specific high-fit subs using the `subreddits` parameter.
 2. **A 24h window is brutal for this niche.** r/AiNoteTaker often goes 24–72h without a new ask. Solution: search with `time=week` (7 days), then post-filter to ≤72h (3 days). De-dup against prior days' leads files so a single thread doesn't get re-surfaced after Michael's already seen it.
 
-### Read subreddits.md first
+### Read subreddits.md and README first
 
-Read `marketing/reddit/subreddits.md` at the start of every run. That file is the single source of truth for:
-- Which subs to scan
-- Per-sub query patterns (in each sub's "Query patterns (lead-finder)" field)
-- Promo-allowed vs engagement-only classification (Tier 1+2 = promo-allowed; Tier 4 = engagement-only)
-- Per-sub status (locked / unlocked / unverified)
+At the start of every run, read:
+1. `marketing/reddit/subreddits.md` — single source of truth for sub list, per-sub query patterns, promo rules, status (locked / unlocked / unverified)
+2. `marketing/reddit/README.md` — specifically the **"Pain point → Humla differentiator map"** section. When drafting Your Reply for a surfaced lead, lead with the pain point that matches the asker's framing, not with the product. The mapping tells you which Humla differentiator addresses each recurring pain.
 
 If subreddits.md has new subs added since the last run, this routine picks them up automatically.
 
@@ -71,10 +69,38 @@ If after per-sub searches you have zero candidates, do a small set of Reddit-wid
 
 ### Intent post-filter (apply to every candidate)
 
-After collecting candidates, drop any that don't have an intent marker:
+After collecting candidates, drop any that don't have an intent marker. Intent markers are organized by category — a thread matching ANY one is enough to keep, but matching multiple is a stronger signal.
 
-- Title or body must contain at least one of: `?`, "looking for", "any recommendations", "anyone know", "anyone tried", "alternative", "switch from", "moving from", "frustrated with", "suggestions", "best for", "should I", "what do you use"
-- Drop announcement posts ("Introducing X", "I built Y", "X v2 is out") — those are competitor launches, not buying intent. Note them in the audit trail and in `intel/competitor-activity.md` for the research routine, then drop from the leads list.
+**Generic asking:**
+- `?`, "looking for", "any recommendations", "anyone know", "anyone tried", "alternative", "switch from", "moving from", "suggestions", "best for", "should I", "what do you use"
+
+**Frustration-driven (high intent — they've already tried something):**
+- "frustrated with", "tired of", "fed up", "sick of", "hate that", "annoying"
+- "stopped using", "cancelled", "had to leave"
+
+**Price shock (the Notion / Granola / Otter pattern — paywall hit):**
+- "too expensive", "couldn't justify", "out of my budget", "can't afford"
+- "trial ended", "free trial ran out", "trial is over"
+- "team plan", "subscription paywall", "$X/month", "$X for", "pricing changed"
+- "not paying that much", "for that price"
+
+**FOSS / local-first / privacy (Humla's natural fit):**
+- "FOSS", "open source", "self-hosted desktop", "BYO key", "bring your own"
+- "local-first", "offline", "on-device", "no cloud", "without uploading"
+- "privacy", "where does my data go", "data residency", "EU data", "GDPR"
+
+**No-bot pain (the Otter/Fathom/Fireflies frustration):**
+- "no bot", "without a bot", "no meeting bot", "without joining the meeting"
+- "bot showed up", "bot joined uninvited", "Otter showed up"
+
+**Speaker identification pain (the wall-of-text complaint):**
+- "wall of text", "who said what", "speaker identification", "speaker labels", "diarization"
+- "couldn't tell who", "no speakers", "all one speaker"
+
+**In-person specifically (Humla's mic-only diarization is a direct match):**
+- "in person", "in-person meeting", "physical meeting", "around the table", "no laptop on the table"
+
+Drop announcement posts ("Introducing X", "I built Y", "X v2 is out") — those are competitor launches, not buying intent. Note them in the audit trail and in `intel/competitor-activity.md` for the research routine, then drop from the leads list.
 
 Filter:
 

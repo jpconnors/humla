@@ -15,7 +15,7 @@ These are Humla's primary audience. Routines should always include these.
 - **Karma gate:** **10 local karma to post** (verified from rules JSON)
 - **Promo rules:** 1 dev post / 30 days; flair required (`[App]`, `[OS]` if open source); disclose maker status; comments promoting your app banned until 10 local karma
 - **Why fit:** Mac-only, primary audience, Humla is a Mac app. Top posts are Problem→Comparison→Solution prose with inline GIF/v.redd.it.
-- **Query patterns (lead-finder):** `"meeting notes"`, `"transcription"`, `"granola"`, `"otter"`, `"fathom"`, `"fireflies"`, `"system audio"`, `"AI note taker"`, `"local"`, `"offline"`
+- **Query patterns (lead-finder):** `"meeting notes"`, `"transcription"`, `"granola"`, `"otter"`, `"fathom"`, `"fireflies"`, `"notion ai"`, `"system audio"`, `"AI note taker"`, `"local"`, `"offline"`
 - **Status:** locked until karma ≥10; karma-builder primary target
 - **Special:** [The App Pile megathread](https://reddit.com/r/macapps/comments/1t0rojv/megathread_the_app_pile_may_2026/) is a stickied monthly thread for non-MAS / non-qualified apps to promote — usable now without main-feed qualification
 
@@ -24,9 +24,17 @@ These are Humla's primary audience. Routines should always include these.
 - **Karma gate:** none published
 - **Promo rules:** lenient; disclose maker
 - **Why fit:** dedicated to the exact category Humla competes in. Threads here are almost always buying intent.
-- **Query patterns (lead-finder):** `"alternative"`, `"local"`, `"offline"`, `"open source"`, `"privacy"`, `"mac"`
+- **Query patterns (lead-finder):** `"alternative"`, `"local"`, `"offline"`, `"open source"`, `"FOSS"`, `"privacy"`, `"mac"`, `"no bot"`, `"speaker identification"`, `"notion"`, `"too expensive"`
 - **Status:** unlocked. Michael already has 1 Humla mention here ([5/1/2026 thread](https://reddit.com/r/AiNoteTaker/comments/1sxue3y))
 - **Cadence note:** can go 24–72h without new asks; lead-finder uses 72h window for this sub
+
+### r/AI_Agents
+- **Subscribers:** ~353k
+- **Karma gate:** none (verified from rules JSON 2026-05-02)
+- **Promo rules:** Self-promo allowed at 1/10 ratio; **links go in comments, not posts**; no spam; no low-effort posts. Disclose maker status.
+- **Why fit:** Bucket A intent threads land here regularly ("Is there an AI note taker for in-person meetings?", "Are we still stuck reviewing AI meeting notes in 2025?"). Audience is buying-mode for meeting tools. **Promoted from Tier 2 → Tier 1 after producing 2 Bucket A leads on first historical scan (2026-05-02).**
+- **Query patterns (lead-finder):** `"meeting"`, `"note taker"`, `"in person"`, `"transcription"`, `"on-device"`, `"speaker"`, `"Granola alternative"`, `"Notion AI"`, `"too expensive"`
+- **Status:** unlocked, verified-allowed
 
 ### r/MacOS
 - **Subscribers:** large
@@ -130,15 +138,16 @@ Lower-frequency monitoring; surfaces fewer leads but worth covering in research 
 - **Why fit:** Mac dev community; signing/notarization/TCC posts on-topic
 - **Status:** unverified
 
-### r/AI_Agents
-- **Karma gate:** unverified
-- **Why fit:** voice-first Mac assistants posted here (Sunnyy); adjacent
-- **Status:** unverified
-
 ### r/ProductivityApps
 - **Karma gate:** unverified
 - **Why fit:** "Top apps" list-style posts surface here (Granola was named in one such post)
 - **Status:** unverified
+
+### r/Notion
+- **Karma gate:** unverified
+- **Why fit:** Notion's AI Meeting Notes is a direct Humla competitor. Notion's pricing model is the personal pain point that drove Humla's existence — team plan to keep AI features ran into 4-figure subscription paywall. People hitting the same wall surface here regularly. High-intent for the BYO-key + local-first frame.
+- **Query patterns (lead-finder):** `"AI meeting notes"`, `"transcription"`, `"too expensive"`, `"trial ended"`, `"alternative"`, `"team plan"`, `"voice"`
+- **Status:** unverified — verify rules on first encounter; treat as engagement-only until verified-allowed
 
 ---
 

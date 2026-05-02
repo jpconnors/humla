@@ -32,7 +32,10 @@ Use the Reddit MCP (Reddit_MCP_Buddy).
 
 Steps:
 
-First, read `marketing/reddit/subreddits.md` for the current target list. The list below is a derivation of Tier 1; if the registry adds or removes subs, this routine picks up the change.
+First, read:
+- `marketing/reddit/subreddits.md` for the current target list (Tier 1 derivation below; auto-picks up registry changes)
+- `marketing/reddit/README.md` "Pain point → Humla differentiator map" — the drafts routine should pick weekly topics that address recurring pain points, not invent new angles
+- `marketing/reddit/intel/recurring-asks.md` if it exists — clustered question patterns from the latest historical scan; pick topics that hit a high-frequency cluster
 
 1. Top of the week in Tier 1 subs (browse_subreddit, sort=top, time=week, limit=25):
    - r/macapps

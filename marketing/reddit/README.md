@@ -130,9 +130,41 @@ Save to `marketing/reddit/intel/assets/` (gitignored). Lead-finder and drafts ro
 8. **No UTM tags on links.** Plain humla.no.
 9. **First comment never includes a link.** Reply with link only after the asker engages.
 
+## Pain point → Humla differentiator map
+
+When drafting a reply or post, lead with the pain point that matches the audience. The mapping below is sourced from the Bucket B clusters in `intel/recurring-asks.md` (refreshed every quarterly historical-scan).
+
+| Pain point recurring on Reddit | Humla's response |
+|---|---|
+| "Subscription too expensive / hit team-plan paywall" (Notion AI, Granola, Otter) | BYO API key. You only pay for the tokens you use. No Humla subscription. |
+| "Can't justify $X/month for the AI features" | Free download, transcript stays on your machine. Cloud transcription optional. |
+| "Otter / Fathom / Fireflies bot showed up uninvited" | No bot. System-audio capture means Humla never has to join the meeting. |
+| "FOSS Granola alternative?" | Source-available on GitHub, local SQLite, plain markdown export. |
+| "Wall of text / can't tell who said what" | Offline diarization on stop. Speaker labels in colored pills. |
+| "Where does my meeting data go?" | Local SQLite. Optional cloud transcription via your own key. Airplane mode supported end-to-end. |
+| "I want this on-device" / "Apple Silicon" | whisper-rs with Metal acceleration; FluidAudio CoreML for diarization. |
+| "Recording in-person meetings" / "around the table" | Mic-only mode auto-detects and diarizes the room. Same pipeline, different branch. |
+| "EU data residency" / "AI Act voice rules" | Built in Norway. Local by default. No US-server dependency unless you opt in via your own OpenAI key. |
+
+Update this table when historical-scan finds new clusters worth addressing.
+
 ## Findings tracker
 
 When a research routine surfaces a strategic finding (a new competitor, a new high-value sub, a sustained narrative shift), capture it as an entry in this section so future tunings can reference what changed and why.
+
+### 2026-05-02 — first historical-scan (60-day window)
+- **407 threads inspected.** Bucket A=2, Bucket B=61 (clustered into 11 patterns), Bucket C=63.
+- **r/AI_Agents promoted Tier 2 → Tier 1.** Produced both Bucket A leads on first scan. Verified-allowed via rules JSON, links go in comments not posts, 1/10 self-promo ratio.
+- **Top recurring-ask clusters** (in priority order from `intel/recurring-asks.md`):
+  1. FOSS Granola alternative
+  2. No-bot AI notetaker
+  3. Speaker identification / wall-of-text complaint
+  4. Local Whisper for meetings
+  5. Otter privacy alternative
+- **Bucket C insight:** Rust+Tauri is the dominant stack across new entrants — Humla's stack is validated, not differentiating. Speaker-attribution IS differentiating. Cloud-tool fatigue (Otter spam, Fathom hallucinations, Granola flakiness) is a recurring complaint and a positioning hook.
+- **Notion AI Meeting Notes** added as a tracked competitor. Personal pain point that drove Humla's existence: hit a $1000+ team-plan paywall after the trial. Added r/Notion to Tier 2 registry. "Too expensive / trial ended / team plan" added to lead-finder intent markers across the board.
+- **Lead-finder intent markers expanded** based on Bucket B clusters: price shock (`too expensive`, `couldn't justify`, `team plan`, `trial ended`), FOSS framing (`FOSS`, `open source`, `BYO key`), no-bot pain (`no bot`, `bot showed up`), speaker pain (`wall of text`, `who said what`), in-person specifics (`around the table`, `no laptop`).
+- **407 permalinks loaded into `intel/_seen-permalinks.txt`** — daily lead-finder de-dup primed.
 
 ### 2026-W18 (week of Apr 27)
 - **New direct competitor: Myna** (u/heyAshwinn) — local-first Mac meeting notes, mic+sys audio, structured summaries, no account, no model download. Colliding with Humla on most axes. Differences worth verifying: <20MB install (likely Apple Speech APIs vs Humla's whisper-rs ~547MB), no diarization, no language coverage mention. Free 5 meetings/month.
