@@ -32,57 +32,28 @@ Goal: Find Reddit threads from the last 24h where someone is actively asking for
 
 Use the Reddit MCP (Reddit_MCP_Buddy) for all queries.
 
-## Search strategy (revised after running)
+## Search strategy
 
 Two lessons from real runs:
 
-1. **Reddit-wide keyword search produces mostly noise.** "granola" matches breakfast recipes; "meeting notes" matches every business thread. The MCP's `search_reddit` does loose word-matching by default. Solution: scope every search to specific high-fit subs using the `subreddits` parameter, and use quoted phrases.
-2. **A 24h window is brutal for this niche.** r/AiNoteTaker often goes 24–72h without a new ask. Solution: search with `time=week` (7 days), then post-filter to ≤72h (3 days). De-dup against the prior 3 days' leads files so a single thread doesn't get re-surfaced after Michael's already seen it.
+1. **Reddit-wide keyword search produces mostly noise.** "granola" matches breakfast recipes; "meeting notes" matches every business thread. The MCP's `search_reddit` does loose word-matching by default. Solution: scope every search to specific high-fit subs using the `subreddits` parameter.
+2. **A 24h window is brutal for this niche.** r/AiNoteTaker often goes 24–72h without a new ask. Solution: search with `time=week` (7 days), then post-filter to ≤72h (3 days). De-dup against prior days' leads files so a single thread doesn't get re-surfaced after Michael's already seen it.
+
+### Read subreddits.md first
+
+Read `marketing/reddit/subreddits.md` at the start of every run. That file is the single source of truth for:
+- Which subs to scan
+- Per-sub query patterns (in each sub's "Query patterns (lead-finder)" field)
+- Promo-allowed vs engagement-only classification (Tier 1+2 = promo-allowed; Tier 4 = engagement-only)
+- Per-sub status (locked / unlocked / unverified)
+
+If subreddits.md has new subs added since the last run, this routine picks them up automatically.
 
 ### Per-sub scoped searches
 
-For each target sub, run a small set of intent queries via `mcp__Reddit_MCP_Buddy__search_reddit` with `subreddits: [sub]`, `sort=new`, `time=week`, `limit=25`. The `subreddits` parameter narrows the haystack and makes loose word-matching tolerable.
+For each Tier 1 + Tier 2 sub in subreddits.md with `Status: unlocked`, run search_reddit with `subreddits: [sub]`, `sort=new`, `time=week`, `limit=25`, using the query patterns listed in that sub's entry. For Tier 2 subs marked `Status: unverified`, first verify rules via the curl + json.tool pattern documented in subreddits.md before treating them as promo-allowed.
 
-**r/AiNoteTaker** (high-fit, low traffic — keep going even when subscribers count is small):
-- `"alternative"`
-- `"local"`
-- `"offline"`
-- `"privacy"`
-- `"open source"`
-- `"mac"`
-
-**r/macapps**:
-- `"meeting notes"`
-- `"transcription"`
-- `"granola"`
-- `"otter"`
-- `"recorder"`
-- `"system audio"`
-
-**r/MacOS**:
-- `"transcribe"`
-- `"meeting"` (with intent post-filter — most r/MacOS posts won't be buying intent)
-- `"system audio"`
-
-**r/LocalLLaMA**:
-- `"whisper"` `"meeting"`
-- `"transcription"` `"local"`
-- `"diarization"`
-- `"meeting notes"`
-
-**r/SideProject**:
-- `"meeting notes"`
-- `"transcription"`
-- `"granola"`
-
-**r/sideprojects**:
-- (same as r/SideProject)
-
-**r/buildinpublic**:
-- `"meeting notes"`
-- `"transcription"`
-
-**r/ClaudeCode**, **r/ClaudeAI**: skip the keyword search; instead browse_subreddit `sort=new` and scan titles for transcription / meeting / dictation / Whisper / on-device AI questions. Most leads here come from build-in-public threads where someone is asking about real-time transcription pipelines — Humla is on-topic.
+**r/ClaudeCode and r/ClaudeAI special handling**: skip keyword search for these; instead `browse_subreddit sort=new` and scan titles for transcription / meeting / dictation / Whisper / on-device AI questions. These subs' value is build-in-public threads where someone is asking about real-time transcription pipelines.
 
 ### Reddit-wide fallback (only if all per-sub searches return empty)
 
@@ -244,21 +215,14 @@ The 1–3 sentence cap from this routine takes precedence over any humanizer sug
 
 ---
 
-Promo-allowed subs (Humla mention with disclosure ok):
-- r/macapps (BUT only after 10 local karma reached — until then, engagement-only)
-- r/SideProject
-- r/sideprojects
-- r/buildinpublic
-- r/AiNoteTaker
-- r/MacOS (Saturdays UTC only)
-- r/LocalLLaMA (1/10 rule, hand-write)
-- r/ClaudeCode, r/ClaudeAI (Humla is Claude-Code-built — natural fit)
+Promo-allowed vs engagement-only is determined by reading subreddits.md (Tier 1+2 = promo-allowed; Tier 3 = case-by-case based on `Promo rules` field; Tier 4 = engagement-only). Always check subreddits.md for the current classification — do not hardcode here.
 
-Engagement-only subs (NO Humla mention):
-- r/privacy
-- r/consulting
-- r/productivity
-- any sub not in the allowed list above
+Special cases to remember:
+- **r/macapps**: promo-allowed only after 10 local karma reached (current account: 0). Until then, surface as engagement-only.
+- **r/MacOS**: promo-allowed Saturdays UTC only.
+- **r/LocalLLaMA**: 1/10 rule, hand-write everything (no AI text).
+- **r/ObsidianMD**: promo-banned for first-post accounts → engagement-only until real history exists.
+- **r/privacy**, **r/consulting**, **r/productivity**, **r/BuyFromEU**: engagement-only forever.
 
 Output: Write the report to marketing/reddit/leads/YYYY-MM-DD.md (today's UTC date):
 

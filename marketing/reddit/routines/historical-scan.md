@@ -40,51 +40,15 @@ Use the Reddit MCP for browsing/searching, and Reddit's raw .json API for verify
 
 ## Per-sub scan
 
-For each target sub, run targeted searches via mcp__Reddit_MCP_Buddy__search_reddit with subreddits=[sub], sort=top, time=year, limit=100. (time=year then post-filter to 60 days — Reddit's API doesn't have a 60-day option; year is the smallest superset.)
+Read `marketing/reddit/subreddits.md` first. The historical scan covers the union of Tier 1, Tier 2, and Tier 3 (60-day window). Tier 4 is also scanned, but only for engagement-only candidates and competitor-activity intel.
 
-Subs and queries:
+For each target sub, run targeted searches via `mcp__Reddit_MCP_Buddy__search_reddit` with `subreddits=[sub]`, `sort=top`, `time=year`, `limit=100`, using the per-sub query patterns from each sub's "Query patterns (lead-finder)" field in subreddits.md. Then post-filter to the last 60 days using `created_utc`. (time=year then post-filter — Reddit's API doesn't have a 60-day option.)
 
-**r/AiNoteTaker** (most fertile sub for Humla; sweep broadly):
-- "" (empty/wildcard if supported, else browse_subreddit sort=top time=year limit=100)
-- "alternative"
-- "local"
-- "offline"
-- "open source"
-- "privacy"
+For r/AiNoteTaker specifically, also run `browse_subreddit sort=top time=year limit=100` (no keyword) to catch posts that don't match any specific keyword — this sub is small enough that a full sweep is feasible and worth it.
 
-**r/macapps**:
-- "meeting notes"
-- "transcription"
-- "granola"
-- "otter"
-- "fathom"
-- "fireflies"
-- "system audio"
-- "AI note taker"
+If a sub in the registry is marked `Status: unverified`, fetch its rules JSON via curl first and update subreddits.md with the verified data before treating the sub as promo-allowed.
 
-**r/MacOS**:
-- "transcribe"
-- "meeting"
-- "system audio"
-- "screen audio"
-
-**r/LocalLLaMA**:
-- "whisper meeting"
-- "transcription local"
-- "diarization"
-- "meeting notes"
-- "voxtral"
-- "parakeet meeting"
-
-**r/SideProject**, **r/sideprojects**, **r/buildinpublic**:
-- "meeting notes"
-- "transcription"
-- "granola"
-
-**r/ClaudeCode**, **r/ClaudeAI**:
-- "transcription"
-- "meeting"
-- "whisper"
+When the registry adds new subs (Michael discovers them), the next historical-scan run picks them up automatically — no need to update this routine prompt.
 
 ## Filter and post-filter
 

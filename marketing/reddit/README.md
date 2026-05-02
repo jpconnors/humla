@@ -49,10 +49,12 @@ Every comment and post should reinforce this identity, not just promote the prod
 ```
 marketing/reddit/
 ├── README.md              # this file
-├── routines/              # the three loop specs (committed to git)
+├── subreddits.md          # central registry — single source of truth for sub list
+├── routines/              # the four loop specs (committed to git)
 │   ├── karma-builder.md
+│   ├── lead-finder.md
 │   ├── research-and-drafts.md
-│   └── lead-finder.md
+│   └── historical-scan.md
 ├── karma/                 # daily karma-builder output (gitignored)
 ├── research/              # weekly research output (gitignored)
 ├── drafts/                # weekly post drafts (gitignored)
@@ -61,6 +63,18 @@ marketing/reddit/
 ```
 
 `marketing/.gitignore` keeps the dynamic outputs local. The specs are versioned so you can tune them and see what changed.
+
+## Single source of truth: subreddits.md
+
+`marketing/reddit/subreddits.md` is the registry every routine reads. It defines:
+- Which subs to monitor, organized by Tier (1=core, 2=adjacent, 3=vertical, 4=engagement-only)
+- Per-sub karma gates and promo rules (verified from each sub's rules JSON)
+- Per-sub query patterns for the lead-finder
+- Per-sub status (unlocked / locked-pending-karma / engagement-only / unverified)
+
+When you discover a new relevant sub, add it to subreddits.md. The next routine run picks it up — no need to update each routine prompt separately.
+
+Routines must read subreddits.md at the start of every run and respect the current data. If a sub is marked `Status: unverified`, the routine should fetch its rules JSON via curl and update the registry with the verified answer before treating it as promo-allowed.
 
 ## Execution: Local Routines (Claude Desktop)
 
@@ -115,6 +129,18 @@ Save to `marketing/reddit/intel/assets/` (gitignored). Lead-finder and drafts ro
 7. **No comment under 50 words.** Substance only.
 8. **No UTM tags on links.** Plain humla.no.
 9. **First comment never includes a link.** Reply with link only after the asker engages.
+
+## Findings tracker
+
+When a research routine surfaces a strategic finding (a new competitor, a new high-value sub, a sustained narrative shift), capture it as an entry in this section so future tunings can reference what changed and why.
+
+### 2026-W18 (week of Apr 27)
+- **New direct competitor: Myna** (u/heyAshwinn) — local-first Mac meeting notes, mic+sys audio, structured summaries, no account, no model download. Colliding with Humla on most axes. Differences worth verifying: <20MB install (likely Apple Speech APIs vs Humla's whisper-rs ~547MB), no diarization, no language coverage mention. Free 5 meetings/month.
+- **New high-fit sub discovered: r/AiNoteTaker** — small but high intent, several open Humla-shaped asks. Promoted to Tier 1 in subreddits.md.
+- **EU AI Act voice-data narrative** — r/BuyFromEU thread (305 upvotes) names Otter/Fathom/Fireflies as US-server liabilities. Humla's local-first + Norway angle aligns directly. r/BuyFromEU added to Tier 4 (engagement-only) — useful for context, off-topic for direct promo.
+- **Top format in r/macapps**: Problem → Comparison → Solution prose with inline GIF or v.redd.it clip. 7 of top 10 had video. Pure-text only works when the news is the asset (Notepad++ port). Reinforces Open Recorder asset priority.
+- **Format that works in r/ClaudeCode**: skill/tool sharing posts (humanizer hit 572 upvotes) outperform product pitches. "Built with Claude Code" angle is valid for Humla.
+- **r/AiNoteTaker cadence**: goes 24–72h without new asks. Lead-finder's 72h window is right.
 
 ## Phase plan
 

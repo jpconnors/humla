@@ -32,15 +32,21 @@ Use the Reddit MCP (Reddit_MCP_Buddy).
 
 Steps:
 
-1. Top of the week in target subs (browse_subreddit, sort=top, time=week, limit=25):
+First, read `marketing/reddit/subreddits.md` for the current target list. The list below is a derivation of Tier 1; if the registry adds or removes subs, this routine picks up the change.
+
+1. Top of the week in Tier 1 subs (browse_subreddit, sort=top, time=week, limit=25):
    - r/macapps
    - r/LocalLLaMA
    - r/SideProject
+   - r/sideprojects
    - r/MacOS
    - r/AiNoteTaker
    - r/ClaudeCode
    - r/ClaudeAI
    - r/buildinpublic
+   - Plus any Tier 2 sub with `Status: unlocked` that's been verified active in the last 30 days
+
+   Also include r/BuyFromEU (Tier 4 — engagement-only) for context: EU AI Act voice-data discussions surface here and inform Humla's positioning even though we don't post.
 
 2. For each top post in r/macapps and r/AiNoteTaker, note:
    - Title pattern (formula: "[OS] X — does Y", "I built X because Y", "Why I switched from X to Y")

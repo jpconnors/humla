@@ -33,15 +33,22 @@ Use the Reddit MCP (Reddit_MCP_Buddy) for all Reddit queries:
 - mcp__Reddit_MCP_Buddy__get_post_details on candidates to read top comments
 - mcp__Reddit_MCP_Buddy__user_analysis on tremendousquotes once at start to get current karma
 
-Priority subs (in this order):
-1. r/macapps — gated at 10 local karma; Michael needs ~2 more. Pure value comments only.
-2. r/ClaudeCode — Michael has standing here. Easy wins.
-3. r/ClaudeAI — Michael has standing here. Easy wins.
-4. r/MacOS — broader macOS sub.
-5. r/LocalLLaMA — high quality bar; comments must be technical.
-6. r/SideProject — Michael has standing.
-7. r/sideprojects — Michael has standing (note: lowercase, separate sub).
-8. r/buildinpublic — Michael has standing.
+Read `marketing/reddit/subreddits.md` at the start of every run. That file is the single source of truth for which subs to monitor and what the rules are. The list below is a prioritized derivation — when subreddits.md is updated, this routine picks up the change automatically on the next run.
+
+Priority subs for karma-building (Tier 1 from subreddits.md, ordered by Michael's existing standing + need):
+
+1. **r/macapps** — gated at 10 local karma; Michael needs ~2 more. Pure value comments only. Most important target.
+2. **r/ClaudeCode** — Michael has standing here. Easy wins. Audience is technical.
+3. **r/ClaudeAI** — Michael has standing here. Easy wins.
+4. **r/MacOS** — broader macOS sub.
+5. **r/LocalLLaMA** — high quality bar; comments must be technical and hand-written (no AI text).
+6. **r/SideProject** — Michael has standing.
+7. **r/sideprojects** (lowercase, separate sub) — Michael has standing.
+8. **r/buildinpublic** — Michael has standing.
+
+Optionally (if time + rate-limit budget allows): scan Tier 2 entries from subreddits.md (r/IMadeThis, r/indiehackers, r/Tauri, r/swift, r/rust, r/macprogramming, r/AI_Agents, r/ProductivityApps) for occasional high-fit threads. These are not part of the daily core loop but yield occasional wins.
+
+Skip everything in subreddits.md Tier 4 (engagement-only) — different routine handles those.
 
 Michael's expertise areas (match threads to these):
 - Tauri / Rust / Swift sidecar architecture
