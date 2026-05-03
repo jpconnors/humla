@@ -385,7 +385,12 @@ pub async fn transcribe_file_segments(
             let t1 = state
                 .full_get_segment_t1(i)
                 .map_err(|e| anyhow!("segment t1: {e}"))? as u64;
-            let trimmed = text.trim().to_string();
+            // Strip whisper specials like <|nocaptions|>, <|nospeech|>,
+            // language tokens, etc. `set_print_special(false)` only
+            // affects the verbose-print path — full_get_segment_text
+            // still embeds these tokens. Run before trim so collapsed
+            // whitespace from removed tokens trims cleanly.
+            let trimmed = strip_whisper_specials(&text).trim().to_string();
             if trimmed.is_empty() {
                 continue;
             }
@@ -418,6 +423,33 @@ pub async fn transcribe_file_segments(
     })
     .await
     .map_err(|e| anyhow!("blocking task: {e}"))?
+}
+
+/// Drop every `<|...|>` substring from `s`. Whisper's segment-text API
+/// occasionally leaks specials like `<|nocaptions|>`, `<|nospeech|>`,
+/// `<|notimestamps|>`, language tokens (`<|en|>`, `<|no|>`), etc. into
+/// the returned text — they're not user-facing words and would render
+/// verbatim in the transcript otherwise. Single linear pass; collapses
+/// the surrounding whitespace by leaving consecutive spaces for the
+/// caller's `trim` / regular display logic to handle (any extra space
+/// inside a sentence reads fine, and we already trim segment edges).
+fn strip_whisper_specials(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut remaining = s;
+    while let Some(start) = remaining.find("<|") {
+        out.push_str(&remaining[..start]);
+        if let Some(end_off) = remaining[start + 2..].find("|>") {
+            remaining = &remaining[start + 2 + end_off + 2..];
+        } else {
+            // Unterminated `<|` — treat the rest as plain text rather
+            // than swallowing it. Should never happen on real whisper
+            // output but keeps the function robust to corrupt input.
+            out.push_str(&remaining[start..]);
+            return out;
+        }
+    }
+    out.push_str(remaining);
+    out
 }
 
 /// Pull token-level data for one whisper segment and group BPE tokens
