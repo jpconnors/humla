@@ -1332,10 +1332,7 @@ function TranscriptPlayer({
                             seek(w.start_ms);
                           }}
                           className={
-                            "cursor-pointer rounded px-0.5 " +
-                            (wordActive
-                              ? "bg-[var(--color-text)] text-[var(--color-canvas)]"
-                              : "hover:bg-[var(--color-pill-hover)]")
+                            "nd-word " + (wordActive ? "nd-word-active" : "")
                           }
                         >
                           {w.text}

@@ -366,6 +366,27 @@ select {
 .drag { -webkit-app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; }
 
+/* Per-word highlight in the playback transcript view. The whole row
+ * inherits `text-[var(--color-text-muted)]` from the container, so
+ * each word stays muted by default. The active word brightens to the
+ * full text colour with a touch of weight emphasis — reads as a
+ * spotlight without breaking the line shape. No CSS transitions: the
+ * rAF loop snaps `currentMs` to the exact word boundary, and any
+ * easing here would re-introduce the mushy lag we just removed. */
+.nd-word {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+.nd-word:hover {
+  background: var(--color-pill-hover);
+}
+.nd-word-active {
+  color: var(--color-text);
+  font-weight: 500;
+  background: color-mix(in srgb, var(--color-text) 12%, transparent);
+}
+
 @keyframes shimmer {
   0%   { background-position: 200% 0; }
   100% { background-position: -200% 0; }
