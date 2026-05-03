@@ -2965,19 +2965,24 @@ async fn transcribe_chunk(
         return Ok(());
     }
 
-    // Cross-chunk hallucination loop guard. Whisper occasionally locks
-    // onto a confident-sounding phrase when the audio is low-SNR (e.g.
-    // an internal MacBook mic during silence between sentences). Each
-    // chunk on its own passes the per-chunk repetition-collapse filter
-    // because the phrase appears only once internally — but the same
-    // phrase comes back chunk after chunk, fed forward by the trail
-    // context. Drop a chunk when its tokens are mostly contained in
-    // the previous same-source chunk's tokens. Threshold 0.7 is
-    // stricter than cross-stream dedup (0.6) because we want to catch
-    // near-identical repeats while leaving room for natural sentence-
-    // continuation overlap. Min token length stays at 3 so brief
-    // acks ("yeah", "ok") aren't suppressed across consecutive chunks.
-    {
+    // Cross-chunk hallucination loop guard — MIC ONLY. Whisper
+    // occasionally locks onto a confident-sounding phrase when the
+    // audio is low-SNR (e.g. an internal MacBook mic during silence
+    // between sentences). Each chunk on its own passes the per-chunk
+    // repetition-collapse filter because the phrase appears only
+    // once internally — but the same phrase comes back chunk after
+    // chunk, fed forward by the trail context. Drop a mic chunk when
+    // its tokens are mostly contained in the previous mic chunk's
+    // tokens. Sys is excluded: clean source audio (podcast / call)
+    // produces continuing topics where consecutive chunks
+    // legitimately share most vocabulary, and the false-positive
+    // rate at any reasonable threshold cuts real content (the bug
+    // user found 2026-05-03 where 40 s of podcast vanished mid-
+    // recording). Whisper rarely hallucinates on sys-quality audio
+    // anyway. Threshold 0.7 is stricter than cross-stream dedup
+    // (0.6) since this is "is this the same chunk" not "did this
+    // get echoed elsewhere"; min-3-tokens preserves brief acks.
+    if source == ChunkSource::Mic {
         let state: State<AppState> = app.state();
         let session = state.recording.lock();
         let log = session.chunk_log.lock();
