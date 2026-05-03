@@ -195,28 +195,27 @@ function PromptEditor({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
-          <label className="text-xs uppercase tracking-wide text-[var(--color-text-muted)]">
-            Content
-          </label>
-          <select
-            onChange={(e) => {
-              if (e.target.value) onSeed(e.target.value);
-              e.currentTarget.value = "";
-            }}
-            className={inputClass + " w-auto py-1 text-xs"}
-            defaultValue=""
-          >
-            <option value="" disabled>
-              Seed from preset…
+        <label className="text-xs uppercase tracking-wide text-[var(--color-text-muted)]">
+          Content
+        </label>
+        <select
+          onChange={(e) => {
+            if (e.target.value) onSeed(e.target.value);
+            e.currentTarget.value = "";
+          }}
+          className={inputClass + " w-auto py-1 text-xs"}
+          defaultValue=""
+          aria-label="Seed content from preset"
+        >
+          <option value="" disabled>
+            Seed from preset…
+          </option>
+          {SUMMARY_PRESETS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {presetLabel(p)}
             </option>
-            {SUMMARY_PRESETS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {presetLabel(p)}
-              </option>
-            ))}
-          </select>
-        </div>
+          ))}
+        </select>
         <textarea
           value={value.content}
           onChange={(e) => onChange({ ...value, content: e.target.value })}
