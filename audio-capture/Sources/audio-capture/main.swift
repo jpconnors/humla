@@ -417,16 +417,45 @@ do {
 
 // MARK: - System audio via ScreenCaptureKit
 
+final class StreamDelegate: NSObject, SCStreamDelegate {
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        emitError("screen capture stopped: \(error.localizedDescription)")
+    }
+    func outputVideoEffectDidStart(for stream: SCStream) {
+        FileHandle.standardError.write(Data("scstream: video effect started\n".utf8))
+    }
+    func outputVideoEffectDidStop(for stream: SCStream) {
+        FileHandle.standardError.write(Data("scstream: video effect stopped\n".utf8))
+    }
+}
+
+let streamDelegate = StreamDelegate()
+
 final class SystemAudioOutput: NSObject, SCStreamOutput {
     var converter: AVAudioConverter?
     var inFormat: AVAudioFormat?
+    var bufferCount: Int = 0
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
+        bufferCount += 1
+        if bufferCount == 1 {
+            FileHandle.standardError.write(Data("scstream: first audio buffer received\n".utf8))
+        }
         guard CMSampleBufferIsValid(sampleBuffer),
               let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
-        else { return }
+        else {
+            if bufferCount <= 3 {
+                FileHandle.standardError.write(Data("scstream: invalid audio buffer (count=\(bufferCount))\n".utf8))
+            }
+            return
+        }
+        if bufferCount == 1 {
+            FileHandle.standardError.write(Data(
+                "scstream: input format sr=\(asbd.mSampleRate)Hz channels=\(asbd.mChannelsPerFrame) bytes/frame=\(asbd.mBytesPerFrame) flags=\(asbd.mFormatFlags)\n".utf8
+            ))
+        }
 
         // Build/refresh source format
         if inFormat == nil || inFormat?.sampleRate != asbd.mSampleRate ||
@@ -435,41 +464,85 @@ final class SystemAudioOutput: NSObject, SCStreamOutput {
             inFormat = AVAudioFormat(streamDescription: &asbdCopy)
             if let inF = inFormat {
                 converter = AVAudioConverter(from: inF, to: targetFormat)
+                FileHandle.standardError.write(Data(
+                    "scstream: built converter inFormat=\(inF) → target\n".utf8
+                ))
+            } else {
+                FileHandle.standardError.write(Data(
+                    "scstream: AVAudioFormat(streamDescription:) returned nil\n".utf8
+                ))
             }
         }
-        guard let inFormat = inFormat, let conv = converter else { return }
+        guard let inFormat = inFormat, let conv = converter else {
+            if bufferCount <= 3 {
+                FileHandle.standardError.write(Data(
+                    "scstream: bail at converter check (inFormat=\(self.inFormat as Any), conv=\(self.converter as Any))\n".utf8
+                ))
+            }
+            return
+        }
 
         // CMSampleBuffer → AVAudioPCMBuffer
         let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-        guard frames > 0,
-              let inBuffer = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: frames) else { return }
+        guard frames > 0 else {
+            if bufferCount <= 3 {
+                FileHandle.standardError.write(Data("scstream: zero frames\n".utf8))
+            }
+            return
+        }
+        guard let inBuffer = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: frames) else {
+            FileHandle.standardError.write(Data("scstream: AVAudioPCMBuffer alloc failed\n".utf8))
+            return
+        }
         inBuffer.frameLength = frames
 
+        // SCK delivers deinterleaved Float32 with up to N channels (2 for
+        // stereo system audio). The default `AudioBufferList()` only holds
+        // ONE AudioBuffer slot; CMSampleBufferGetAudioBufferListWith… needs
+        // a slot per channel and returns -12737
+        // (kCMSampleBufferError_ArrayTooSmall) if the list is too small.
+        // Allocate dynamically based on channel count.
         var blockBuffer: CMBlockBuffer?
-        var audioBufferList = AudioBufferList()
+        let numBuffers = max(1, Int(inFormat.channelCount))
+        let listSize = MemoryLayout<AudioBufferList>.size
+            + max(0, numBuffers - 1) * MemoryLayout<AudioBuffer>.size
+        let abl = AudioBufferList.allocate(maximumBuffers: numBuffers)
+        defer { free(abl.unsafeMutablePointer) }
+
         let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
             sampleBuffer,
             bufferListSizeNeededOut: nil,
-            bufferListOut: &audioBufferList,
-            bufferListSize: MemoryLayout<AudioBufferList>.size,
+            bufferListOut: abl.unsafeMutablePointer,
+            bufferListSize: listSize,
             blockBufferAllocator: nil,
             blockBufferMemoryAllocator: nil,
-            flags: 0,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
             blockBufferOut: &blockBuffer
         )
-        guard status == noErr else { return }
+        guard status == noErr else {
+            if bufferCount <= 3 {
+                FileHandle.standardError.write(Data("scstream: GetAudioBufferList status=\(status) (numBuffers=\(numBuffers), listSize=\(listSize))\n".utf8))
+            }
+            return
+        }
 
-        let abl = UnsafeMutableAudioBufferListPointer(&audioBufferList)
-        // Copy interleaved/non-interleaved input into inBuffer.
-        if let dst = inBuffer.mutableAudioBufferList.pointee.mBuffers.mData,
-           let src = abl[0].mData {
-            let n = Int(min(abl[0].mDataByteSize, inBuffer.mutableAudioBufferList.pointee.mBuffers.mDataByteSize))
-            memcpy(dst, src, n)
+        // Copy each channel from the source list into the matching slot in
+        // inBuffer's deinterleaved layout.
+        let inAbl = UnsafeMutableAudioBufferListPointer(inBuffer.mutableAudioBufferList)
+        let copyChannels = min(inAbl.count, abl.count)
+        for i in 0..<copyChannels {
+            if let dst = inAbl[i].mData, let src = abl[i].mData {
+                let n = Int(min(abl[i].mDataByteSize, inAbl[i].mDataByteSize))
+                memcpy(dst, src, n)
+            }
         }
 
         let ratio = targetSampleRate / inFormat.sampleRate
         let cap = AVAudioFrameCount(Double(frames) * ratio + 1024)
-        guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: cap) else { return }
+        guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: cap) else {
+            FileHandle.standardError.write(Data("scstream: out PCMBuffer alloc failed\n".utf8))
+            return
+        }
 
         var error: NSError?
         var supplied = false
@@ -479,13 +552,34 @@ final class SystemAudioOutput: NSObject, SCStreamOutput {
             status.pointee = .haveData
             return inBuffer
         }
-        guard convStatus != .error, let chans = out.floatChannelData else { return }
+        if convStatus == .error {
+            if bufferCount <= 3 {
+                let msg = error?.localizedDescription ?? "unknown"
+                FileHandle.standardError.write(Data("scstream: conv.convert error: \(msg)\n".utf8))
+            }
+            return
+        }
+        guard let chans = out.floatChannelData else {
+            if bufferCount <= 3 {
+                FileHandle.standardError.write(Data("scstream: no floatChannelData on out buffer\n".utf8))
+            }
+            return
+        }
         let n = Int(out.frameLength)
         let arr = Array(UnsafeBufferPointer(start: chans[0], count: n))
         recordSysStats(samples: arr)
         if let buf = makeBuffer(arr) {
             sysWriter.write(buf)
             sysFullWriter.write(buf)
+            if bufferCount == 1 {
+                FileHandle.standardError.write(Data(
+                    "scstream: first buffer written to sysWriter (n=\(n) samples)\n".utf8
+                ))
+            }
+        } else {
+            if bufferCount <= 3 {
+                FileHandle.standardError.write(Data("scstream: makeBuffer returned nil (n=\(n))\n".utf8))
+            }
         }
     }
 }
@@ -514,13 +608,15 @@ func startSystemAudio() async {
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         cfg.queueDepth = 5
 
-        let stream = SCStream(filter: filter, configuration: cfg, delegate: nil)
+        let stream = SCStream(filter: filter, configuration: cfg, delegate: streamDelegate)
+        FileHandle.standardError.write(Data("scstream: starting capture (display=\(display.displayID))\n".utf8))
         let q = DispatchQueue(label: "sck.audio")
         try stream.addStreamOutput(systemOutput, type: .audio, sampleHandlerQueue: q)
         // Adding a video output is required by SCK; we just discard.
         try stream.addStreamOutput(NoopVideoOutput(), type: .screen, sampleHandlerQueue: DispatchQueue(label: "sck.video"))
         try await stream.startCapture()
         scStream = stream
+        FileHandle.standardError.write(Data("scstream: capture started successfully\n".utf8))
     } catch {
         emitError("screen capture: \(error.localizedDescription)")
     }
