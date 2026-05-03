@@ -2737,11 +2737,35 @@ fn serialize_timeline(
     out
 }
 
+/// Jaccard similarity: |A ∩ B| / |A ∪ B|. 1.0 when the sets are
+/// equal, scaling down with each token unique to either side. Used
+/// for cross-chunk dedup where both chunks come from the same source
+/// at similar VAD lengths — penalising added unique tokens lets us
+/// keep legitimate continuations (chunk N+1 = chunk N's content +
+/// new sentence) while still catching exact / near-exact repeats
+/// from a Whisper hallucination loop. Containment is the wrong
+/// metric here because `min()` makes it symmetric and scores a
+/// strict superset as 1.0.
+fn token_jaccard(a: &[String], b: &[String]) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let set_a: std::collections::HashSet<&str> = a.iter().map(String::as_str).collect();
+    let set_b: std::collections::HashSet<&str> = b.iter().map(String::as_str).collect();
+    let inter = set_a.intersection(&set_b).count() as f32;
+    let union = set_a.union(&set_b).count() as f32;
+    if union == 0.0 {
+        0.0
+    } else {
+        inter / union
+    }
+}
+
 /// Containment coefficient: |A ∩ B| / min(|A|, |B|). 1.0 when A ⊆ B
-/// (or vice versa). Better than Jaccard for this case because a sys
-/// window concatenated from multiple chunks is often much larger than
-/// a single mic chunk; Jaccard's union-in-the-denominator would
-/// suppress the score below threshold even on a perfect echo.
+/// (or vice versa). Used for cross-stream echo dedup where a sys
+/// window concatenated from multiple chunks is often much larger
+/// than a single mic chunk; Jaccard's union-in-the-denominator
+/// would suppress the score below threshold even on a perfect echo.
 fn token_containment(a: &[String], b: &[String]) -> f32 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
@@ -2971,17 +2995,19 @@ async fn transcribe_chunk(
     // between sentences). Each chunk on its own passes the per-chunk
     // repetition-collapse filter because the phrase appears only
     // once internally — but the same phrase comes back chunk after
-    // chunk, fed forward by the trail context. Drop a mic chunk when
-    // its tokens are mostly contained in the previous mic chunk's
-    // tokens. Sys is excluded: clean source audio (podcast / call)
-    // produces continuing topics where consecutive chunks
-    // legitimately share most vocabulary, and the false-positive
-    // rate at any reasonable threshold cuts real content (the bug
-    // user found 2026-05-03 where 40 s of podcast vanished mid-
-    // recording). Whisper rarely hallucinates on sys-quality audio
-    // anyway. Threshold 0.7 is stricter than cross-stream dedup
-    // (0.6) since this is "is this the same chunk" not "did this
-    // get echoed elsewhere"; min-3-tokens preserves brief acks.
+    // chunk, fed forward by the trail context.
+    //
+    // We use Jaccard similarity (|A ∩ B| / |A ∪ B|) at a strict 0.85
+    // threshold so legitimate continuations survive: a chunk with
+    // even a few new unique words drops well below 0.85, while exact
+    // / near-exact repeats from a hallucination loop score ≥0.95.
+    // Earlier iteration used containment with min-denominator and a
+    // 0.7 threshold; that caught loops but also dropped real content
+    // when chunk N+1 was a strict superset of chunk N.
+    //
+    // Sys excluded entirely: clean source audio rarely hallucinates,
+    // and consecutive sys chunks legitimately share lots of
+    // vocabulary on continuing topics.
     if source == ChunkSource::Mic {
         let state: State<AppState> = app.state();
         let session = state.recording.lock();
@@ -2997,7 +3023,7 @@ async fn transcribe_chunk(
             let new_tokens = normalize_tokens(&trimmed);
             if new_tokens.len() >= 3 {
                 let prev_tokens = normalize_tokens(&prev);
-                if token_containment(&new_tokens, &prev_tokens) >= 0.7 {
+                if token_jaccard(&new_tokens, &prev_tokens) >= 0.85 {
                     eprintln!(
                         "transcribe: dropping cross-chunk repeat (likely hallucination loop): {trimmed}"
                     );
