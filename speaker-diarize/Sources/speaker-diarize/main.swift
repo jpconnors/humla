@@ -111,16 +111,17 @@ func community1ModelsDirectory() -> URL {
 }
 
 // Sortformer models live under
-// <Library/Application Support/FluidAudio/Models>/diar-streaming-sortformer-coreml/
-// per `SortformerModels.loadFromHuggingFace`'s default cache layout. We use
-// the highContextV2_1 variant for offline accuracy.
+// <Library/Application Support/FluidAudio/Models>/sortformer/<variant>.mlmodelc
+// per FluidAudio's DownloadUtils — note the subdir is `sortformer`, not the
+// HF repo's path component (`diar-streaming-sortformer-coreml`). We use the
+// highContextV2_1 variant for offline accuracy.
 let sortformerVariant: ModelNames.Sortformer.Variant = .highContextV2_1
 let sortformerConfig: SortformerConfig = .highContextV2_1
 
 func sortformerModelsDirectory() -> URL {
     FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("FluidAudio/Models", isDirectory: true)
-        .appendingPathComponent("diar-streaming-sortformer-coreml", isDirectory: true)
+        .appendingPathComponent("sortformer", isDirectory: true)
 }
 
 func sortformerModelPath() -> URL {
