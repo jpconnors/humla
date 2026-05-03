@@ -3047,16 +3047,51 @@ async fn transcribe_chunk(
     // the transcript from the chunk log sorted by (source, start_ms) at
     // stop time, so the saved transcript ends up properly ordered.
     let state: State<AppState> = app.state();
-    // Session-active guard. The provider call above (whisper / openai) can
-    // take long enough that recording_stop fires while we're still awaiting
-    // it. If the session has been cleared (note_id taken in recording_stop)
-    // or replaced (user started a new recording), this chunk's text would
-    // append onto a transcript the post-stop chain has already rewritten,
-    // pasting raw text past the labelled output. Bail instead.
+
+    // Push to chunk_log unconditionally — even when the session has
+    // been cleared by recording_stop. The post-stop chain's
+    // diarize_and_apply / final_pass_apply rebuild the transcript
+    // from chunk_log, so a tail chunk that finished decoding after
+    // recording_stop still gets included. Without this, the last
+    // 5–20 s of audio (any in-flight transcribe completing after
+    // stop) would silently vanish — the bug user reported.
+    //
+    // Words come from local Whisper only and arrive with chunk-
+    // relative timestamps (whisper timed against this chunk's WAV,
+    // which starts at t=0 from its own perspective). The playback
+    // view adds chunk.start_ms back when it needs absolute time.
+    let chunk_words: Vec<crate::recording::ChunkWord> = words
+        .into_iter()
+        .map(|w| crate::recording::ChunkWord {
+            text: w.text,
+            start_ms: w.start_ms,
+            end_ms: w.end_ms,
+        })
+        .collect();
+    {
+        let session = state.recording.lock();
+        session.chunk_log.lock().push(ChunkRecord {
+            source,
+            start_ms,
+            text: trimmed.clone(),
+            words: chunk_words,
+        });
+    }
+
+    // Live-update guard. The provider call above (whisper / openai)
+    // can take long enough that recording_stop fires while we're
+    // still awaiting it. If the session has been cleared (note_id
+    // taken in recording_stop) or replaced (user started a new
+    // recording), skip the live DB append + trail update + UI emit
+    // — diarize_and_apply will rebuild the saved transcript from
+    // chunk_log shortly. Without this guard, a stale db::append
+    // could land on top of the post-stop labelled transcript.
     {
         let session = state.recording.lock();
         if session.note_id.as_deref() != Some(&note_id) {
-            eprintln!("transcribe: session no longer active for note, dropping chunk");
+            eprintln!(
+                "transcribe: session inactive, chunk preserved in log for post-stop"
+            );
             return Ok(());
         }
     }
@@ -3071,25 +3106,6 @@ async fn transcribe_chunk(
             ChunkSource::Sys => session.sys_trail.lock(),
         };
         trail.push(&trimmed);
-        // Words come from local Whisper only and arrive with chunk-
-        // relative timestamps (whisper timed against this chunk's
-        // WAV, which starts at t=0 from its own perspective). That
-        // means we can persist them as-is — the playback view adds
-        // chunk.start_ms back when it needs absolute time.
-        let chunk_words = words
-            .into_iter()
-            .map(|w| crate::recording::ChunkWord {
-                text: w.text,
-                start_ms: w.start_ms,
-                end_ms: w.end_ms,
-            })
-            .collect();
-        session.chunk_log.lock().push(ChunkRecord {
-            source,
-            start_ms,
-            text: trimmed.clone(),
-            words: chunk_words,
-        });
     }
     let _ = app.emit(
         "transcript_replaced",
