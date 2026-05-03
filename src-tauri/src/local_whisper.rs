@@ -6,17 +6,29 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 use crate::wav;
 
-// Catalog of GGML Whisper models the app can download. The first entry is
-// the default — picked at first-run, used as a fallback when the user's
-// selected model isn't downloaded. Sizes are approximate (HF doesn't
+// Catalog of GGML Whisper models the app can download. The first Primary
+// entry is the default — picked at first-run, used as a fallback when the
+// user's selected model isn't downloaded. Sizes are approximate (HF doesn't
 // always return Content-Length on the first hop) and used as the progress
 // bar's pre-stream estimate.
 //
-// `language_filter` hides specialized models from users not on that
-// language. NB Whisper Large is finetuned for Norwegian by Nasjonalbiblioteket
-// and produces noticeably worse output on other languages, so we only
-// surface it when the global language is set to "no". General-purpose
-// Whisper models have `language_filter: None` and show up always.
+// `kind` separates two roles:
+//   - Primary: the user's general-purpose model. Selectable as the active
+//     transcription model; one of these is always used unless an addon
+//     overrides it.
+//   - LanguageAddon { language }: a specialised model that automatically
+//     takes over for recordings in that language, but is never the active
+//     primary. Downloading it is the opt-in. NB Whisper Large is finetuned
+//     by Nasjonalbiblioteket on Norwegian and produces noticeably worse
+//     output on other languages, so we don't let users pick it for an
+//     English meeting — it kicks in only when the recording's language is
+//     "no" and is otherwise dormant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelKind {
+    Primary,
+    LanguageAddon { language: &'static str },
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ModelInfo {
     pub id: &'static str,
@@ -25,7 +37,7 @@ pub struct ModelInfo {
     pub url: &'static str,
     pub size_bytes_hint: u64,
     pub description: &'static str,
-    pub language_filter: Option<&'static str>,
+    pub kind: ModelKind,
 }
 
 pub const DEFAULT_MODEL_ID: &str = "large-v3-turbo-q5";
@@ -50,7 +62,7 @@ const MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
         size_bytes_hint: 601_620_480,
         description: "Multilingual. ~10× realtime on Apple Silicon. The recommended default for almost all use.",
-        language_filter: None,
+        kind: ModelKind::Primary,
     },
     ModelInfo {
         id: "large-v3-q5",
@@ -59,7 +71,7 @@ const MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin",
         size_bytes_hint: 1_159_868_416,
         description: "Multilingual. The non-turbo Large v3 — slower than Turbo but the highest-accuracy baseline on dense or noisy audio.",
-        language_filter: None,
+        kind: ModelKind::Primary,
     },
     ModelInfo {
         id: "large-v2-q5",
@@ -68,7 +80,7 @@ const MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v2-q5_0.bin",
         size_bytes_hint: 1_159_868_416,
         description: "Multilingual. The previous Large generation — sometimes preferable to v3 on accented speech where v3 introduced regressions.",
-        language_filter: None,
+        kind: ModelKind::Primary,
     },
     ModelInfo {
         id: "medium-q5",
@@ -77,18 +89,32 @@ const MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
         size_bytes_hint: 565_182_464,
         description: "Multilingual. Smaller and faster than Large on slower hardware; lower accuracy on dense or technical speech.",
-        language_filter: None,
+        kind: ModelKind::Primary,
     },
     ModelInfo {
         id: "nb-whisper-large-q5",
-        label: "NB Whisper Large (Norwegian)",
+        label: "NB Whisper Large (Norwegian add-on)",
         filename: "nb-whisper-large-q5_0.bin",
         url: "https://huggingface.co/NbAiLab/nb-whisper-large/resolve/main/ggml-model-q5_0.bin",
         size_bytes_hint: 1_159_237_632,
-        description: "Norwegian-finetuned by Nasjonalbiblioteket. Best for Norwegian audio; do not use for other languages.",
-        language_filter: Some("no"),
+        description: "Norwegian-finetuned by Nasjonalbiblioteket. Auto-used for Norwegian recordings when downloaded; English/other-language meetings keep using your active primary model.",
+        kind: ModelKind::LanguageAddon { language: "no" },
     },
 ];
+
+/// Look up the language-addon model that matches a recording's language.
+/// Returns None for "auto" (we don't know the language pre-decode) or
+/// when no addon claims this language. Caller still has to check whether
+/// the addon is actually downloaded before using its filename.
+pub fn addon_for_language(language: &str) -> Option<&'static ModelInfo> {
+    if language == "auto" {
+        return None;
+    }
+    MODELS.iter().find(|m| match m.kind {
+        ModelKind::LanguageAddon { language: addon_lang } => addon_lang == language,
+        _ => false,
+    })
+}
 
 // A loaded WhisperContext is reusable across calls and is the bulk of the
 // startup cost (~1-3s on Apple Silicon). We hold it in AppState so repeated

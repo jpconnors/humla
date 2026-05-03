@@ -260,13 +260,14 @@ export function Settings() {
         delete next[modelId];
         return { models, downloading: next, error: null, flash: null };
       });
-      // First successful download with no active selection → adopt this
-      // model. Skips silently when the user already has one set.
-      if (!s.local_whisper_model || s.local_whisper_model === DEFAULTS.local_whisper_model) {
-        const downloaded = models.filter((m) => m.downloaded);
-        if (downloaded.length === 1) {
-          await update("local_whisper_model", modelId);
-        }
+      // First downloaded primary auto-becomes active. Addons never become
+      // the active primary — they auto-apply via language match instead.
+      const downloadedInfo = models.find((m) => m.id === modelId);
+      if (
+        downloadedInfo?.kind === "primary" &&
+        models.filter((m) => m.kind === "primary" && m.downloaded).length === 1
+      ) {
+        await update("local_whisper_model", modelId);
       }
       const label = models.find((m) => m.id === modelId)?.label ?? modelId;
       flashLocal(`${label} downloaded`);
@@ -287,10 +288,13 @@ export function Settings() {
       const models = await ipc.localWhisperModels();
       setLocal((p) => ({ ...p, models, error: null, flash: null }));
       flashLocal(before ? `Deleted ${before.label}` : "Whisper model deleted");
-      // If the deleted model was the active one, fall back to the first
-      // still-downloaded model (or the registry default if none).
+      // If the deleted model was the active primary, fall back to the
+      // first still-downloaded primary (or the registry default if none).
+      // Addons aren't candidates — they're auto-applied, not user-active.
       if (s.local_whisper_model === modelId) {
-        const fallback = models.find((m) => m.downloaded)?.id ?? DEFAULTS.local_whisper_model;
+        const fallback =
+          models.find((m) => m.kind === "primary" && m.downloaded)?.id ??
+          DEFAULTS.local_whisper_model;
         await update("local_whisper_model", fallback);
       }
     } catch (e) {
@@ -722,87 +726,61 @@ function LocalModelManager({
   onDelete: (id: string) => void;
   onSelect: (id: string) => void;
 }) {
-  // Filter out language-specific models when the global language doesn't
-  // match. Currently this only hides NB Whisper Large unless language is
-  // Norwegian, but new specialised checkpoints would slot in here too.
-  const visible = state.models.filter(
-    (m) => m.languageFilter === null || m.languageFilter === language,
+  const primaries = state.models.filter((m) => m.kind === "primary");
+  // Show an addon row when its language matches the user's global default.
+  // It's also always shown when already downloaded so the user can delete
+  // it after switching languages.
+  const addons = state.models.filter(
+    (m) => m.kind === "addon" && (m.addonLanguage === language || m.downloaded),
   );
 
   return (
-    <div className="flex flex-col gap-3">
-      <p className="text-xs text-[var(--color-text-muted)]">
-        Pick a model to use for transcription. The first download is auto-
-        selected; afterwards switch with the radio button. All models run
-        on-device via Metal.
-      </p>
-      {visible.map((m) => {
-        const dl = state.downloading[m.id];
-        const isActive = m.id === activeId;
-        return (
-          <div
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3">
+        <p className="text-xs text-[var(--color-text-muted)]">
+          Pick a model to use for transcription. The first download is
+          auto-selected; afterwards switch with the radio button. All
+          models run on-device via Metal.
+        </p>
+        {primaries.map((m) => (
+          <ModelRow
             key={m.id}
-            className="flex flex-col gap-2 px-3 py-2 rounded-md border border-[var(--color-line)]"
-          >
-            <div className="flex items-start gap-2">
-              <input
-                type="radio"
-                name="local_whisper_model"
-                checked={isActive}
-                disabled={!m.downloaded}
-                onChange={() => onSelect(m.id)}
-                className="mt-1"
-                aria-label={`Use ${m.label}`}
-              />
-              <div className="flex-1 flex flex-col gap-0.5">
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="font-medium">{m.label}</span>
-                  {m.languageFilter && (
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--color-pill-hover)] text-[var(--color-text-muted)]">
-                      {m.languageFilter} only
-                    </span>
-                  )}
-                  {isActive && m.downloaded && (
-                    <span className="text-xs text-[var(--color-text-muted)]">· active</span>
-                  )}
-                </div>
-                <p className="text-xs text-[var(--color-text-muted)]">{m.description}</p>
-                <p className="text-xs text-[var(--color-text-muted)]">
-                  {m.downloaded
-                    ? `Downloaded${m.sizeBytes ? ` · ${formatBytes(m.sizeBytes)}` : ""}`
-                    : `Not downloaded · ~${formatBytes(m.sizeBytesHint)}`}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                {!m.downloaded && !dl && (
-                  <Btn onClick={() => onDownload(m.id)}>Download</Btn>
-                )}
-                {m.downloaded && !dl && (
-                  <Btn onClick={() => onDelete(m.id)}>Delete</Btn>
-                )}
-              </div>
-            </div>
-            {dl && (
-              <div className="flex flex-col gap-1 mt-1">
-                <div className="text-xs text-[var(--color-text-muted)]">
-                  Downloading{dl.total ? ` ${formatBytes(dl.received)} / ${formatBytes(dl.total)}` : ` ${formatBytes(dl.received)}`}…
-                </div>
-                <div className="h-1 rounded bg-[var(--color-pill-hover)] overflow-hidden">
-                  <div
-                    className="h-full bg-[var(--color-text-muted)] transition-[width] duration-150"
-                    style={{
-                      width:
-                        dl.total === null
-                          ? "30%"
-                          : `${Math.min(100, (dl.received / dl.total) * 100)}%`,
-                    }}
-                  />
-                </div>
-              </div>
-            )}
+            model={m}
+            progress={state.downloading[m.id]}
+            isActive={m.id === activeId}
+            showRadio
+            onDownload={onDownload}
+            onDelete={onDelete}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
+      {addons.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <p className="text-xs uppercase tracking-wide text-[var(--color-text-muted)]">
+              Add-ons
+            </p>
+            <p className="text-xs text-[var(--color-text-muted)]">
+              Specialised models for specific languages. When downloaded,
+              the addon is used automatically for matching recordings —
+              your active primary still handles every other language.
+            </p>
           </div>
-        );
-      })}
+          {addons.map((m) => (
+            <ModelRow
+              key={m.id}
+              model={m}
+              progress={state.downloading[m.id]}
+              isActive={false}
+              showRadio={false}
+              onDownload={onDownload}
+              onDelete={onDelete}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      )}
       {state.flash && (
         <p className="text-xs px-2 py-1 rounded bg-[var(--color-pill-hover)] inline-block break-all" role="status">
           {state.flash}
@@ -810,6 +788,89 @@ function LocalModelManager({
       )}
       {state.error && (
         <p className="text-sm text-red-600 dark:text-red-400 break-all">{state.error}</p>
+      )}
+    </div>
+  );
+}
+
+function ModelRow({
+  model,
+  progress,
+  isActive,
+  showRadio,
+  onDownload,
+  onDelete,
+  onSelect,
+}: {
+  model: LocalWhisperModelStatus;
+  progress: { received: number; total: number | null } | undefined;
+  isActive: boolean;
+  showRadio: boolean;
+  onDownload: (id: string) => void;
+  onDelete: (id: string) => void;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2 px-3 py-2 rounded-md border border-[var(--color-line)]">
+      <div className="flex items-start gap-2">
+        {showRadio ? (
+          <input
+            type="radio"
+            name="local_whisper_model"
+            checked={isActive}
+            disabled={!model.downloaded}
+            onChange={() => onSelect(model.id)}
+            className="mt-1"
+            aria-label={`Use ${model.label}`}
+          />
+        ) : (
+          <span className="mt-1 w-3.5" aria-hidden />
+        )}
+        <div className="flex-1 flex flex-col gap-0.5">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="font-medium">{model.label}</span>
+            {model.kind === "addon" && model.addonLanguage && (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--color-pill-hover)] text-[var(--color-text-muted)]">
+                {model.addonLanguage} auto
+              </span>
+            )}
+            {isActive && model.downloaded && (
+              <span className="text-xs text-[var(--color-text-muted)]">· active</span>
+            )}
+          </div>
+          <p className="text-xs text-[var(--color-text-muted)]">{model.description}</p>
+          <p className="text-xs text-[var(--color-text-muted)]">
+            {model.downloaded
+              ? `Downloaded${model.sizeBytes ? ` · ${formatBytes(model.sizeBytes)}` : ""}`
+              : `Not downloaded · ~${formatBytes(model.sizeBytesHint)}`}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          {!model.downloaded && !progress && (
+            <Btn onClick={() => onDownload(model.id)}>Download</Btn>
+          )}
+          {model.downloaded && !progress && (
+            <Btn onClick={() => onDelete(model.id)}>Delete</Btn>
+          )}
+        </div>
+      </div>
+      {progress && (
+        <div className="flex flex-col gap-1 mt-1">
+          <div className="text-xs text-[var(--color-text-muted)]">
+            Downloading{progress.total ? ` ${formatBytes(progress.received)} / ${formatBytes(progress.total)}` : ` ${formatBytes(progress.received)}`}…
+          </div>
+          <div className="h-1 rounded bg-[var(--color-pill-hover)] overflow-hidden">
+            <div
+              className="h-full bg-[var(--color-text-muted)] transition-[width] duration-150"
+              style={{
+                width:
+                  progress.total === null
+                    ? "30%"
+                    : `${Math.min(100, (progress.received / progress.total) * 100)}%`,
+              }}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

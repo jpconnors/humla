@@ -226,29 +226,45 @@ fn model_path_for(app: &AppHandle, info: &local_whisper::ModelInfo) -> Result<Pa
     Ok(local_model_dir(app)?.join(info.filename))
 }
 
-/// Resolve the path of the currently selected model. Falls back to the
-/// default model when the setting is empty, points at an unknown id, or
-/// the selected model isn't downloaded — last branch keeps recordings
-/// working when the user deletes their active model and forgets to pick
-/// a new one.
-fn local_model_path(app: &AppHandle) -> Result<PathBuf, String> {
+/// Resolve the model file to use for a recording.
+///
+/// Resolution order:
+///   1. Language addon. If a `LanguageAddon { language }` model matches
+///      the recording's language and is downloaded on disk, use it. NB
+///      Whisper Large takes this slot for Norwegian audio; future
+///      language-specialised models drop in via the same registry hook.
+///      Skips on "auto" — we can't know the language pre-decode.
+///   2. Active primary. The user's selected `local_whisper_model`,
+///      restricted to `Primary`-kind entries (so a stale setting can't
+///      promote an addon to active).
+///   3. Default primary. Fallback when the selection is empty, unknown,
+///      or points at a non-Primary entry.
+///
+/// Returns the resolved path even when the file doesn't exist on disk —
+/// that's how the caller's "not downloaded" error surfaces with a real
+/// path the user can recognise.
+fn local_model_path(app: &AppHandle, language: &str) -> Result<PathBuf, String> {
+    let dir = local_model_dir(app)?;
+    if let Some(addon) = local_whisper::addon_for_language(language) {
+        let p = dir.join(addon.filename);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
     let state: State<AppState> = app.state();
     let conn = state.db.lock();
     let id = db::get_setting(&conn, "local_whisper_model")
         .map_err(err)?
         .unwrap_or_default();
     drop(conn);
-    let info = local_whisper::find_model(&id).unwrap_or_else(local_whisper::default_model);
-    let path = model_path_for(app, info)?;
+    let info = local_whisper::find_model(&id)
+        .filter(|m| m.kind == local_whisper::ModelKind::Primary)
+        .unwrap_or_else(local_whisper::default_model);
+    let path = dir.join(info.filename);
     if path.exists() {
         return Ok(path);
     }
-    // Selected model not downloaded — try the default. If neither exists,
-    // return the path anyway so the caller surfaces a "not downloaded"
-    // error with a real path the user can recognise.
-    let default = local_whisper::default_model();
-    let default_path = model_path_for(app, default)?;
-    Ok(default_path)
+    Ok(dir.join(local_whisper::default_model().filename))
 }
 
 #[derive(serde::Serialize)]
@@ -259,7 +275,13 @@ pub struct LocalWhisperModelStatus {
     description: String,
     filename: String,
     size_bytes_hint: u64,
-    language_filter: Option<String>,
+    /// "primary" or "addon". Frontend renders addons in a separate group
+    /// without the active-model radio button — they auto-apply via
+    /// addon_language instead of being user-selectable.
+    kind: &'static str,
+    /// Set for `kind == "addon"`. The recording language that triggers
+    /// this model. None for primaries.
+    addon_language: Option<String>,
     downloaded: bool,
     size_bytes: Option<u64>,
     path: Option<String>,
@@ -277,13 +299,20 @@ pub fn local_whisper_models(app: AppHandle) -> Result<Vec<LocalWhisperModelStatu
         } else {
             None
         };
+        let (kind, addon_language) = match info.kind {
+            local_whisper::ModelKind::Primary => ("primary", None),
+            local_whisper::ModelKind::LanguageAddon { language } => {
+                ("addon", Some(language.to_string()))
+            }
+        };
         out.push(LocalWhisperModelStatus {
             id: info.id.to_string(),
             label: info.label.to_string(),
             description: info.description.to_string(),
             filename: info.filename.to_string(),
             size_bytes_hint: info.size_bytes_hint,
-            language_filter: info.language_filter.map(|s| s.to_string()),
+            kind,
+            addon_language,
             downloaded,
             size_bytes,
             path: if downloaded { path.to_str().map(|s| s.to_string()) } else { None },
@@ -538,16 +567,26 @@ pub async fn recording_start(
     }
 
     // Pre-check the configured provider's prerequisites — without them
-    // transcription always fails silently.
-    let provider = {
+    // transcription always fails silently. Resolve the note's language up
+    // front too: local_model_path uses it to decide whether a language
+    // addon (e.g. NB Whisper for Norwegian) overrides the active primary.
+    let (provider, language) = {
         let conn = state.db.lock();
-        db::get_setting(&conn, "transcribe_provider")
+        let p = db::get_setting(&conn, "transcribe_provider")
             .map_err(err)?
-            .unwrap_or_else(|| DEFAULT_TRANSCRIBE_PROVIDER.to_string())
+            .unwrap_or_else(|| DEFAULT_TRANSCRIBE_PROVIDER.to_string());
+        let global = db::get_setting(&conn, "language")
+            .map_err(err)?
+            .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
+        let note_lang = db::get_note(&conn, &note_id)
+            .map(|n| n.language)
+            .unwrap_or_default();
+        let l = if note_lang.trim().is_empty() { global } else { note_lang };
+        (p, l)
     };
     let pre_err = match provider.as_str() {
         "local" => {
-            let p = local_model_path(&app).map_err(|e| e.to_string())?;
+            let p = local_model_path(&app, &language).map_err(|e| e.to_string())?;
             (!p.exists()).then_some(
                 "Local Whisper model not downloaded. Download it in Settings → Transcription.",
             )
@@ -566,7 +605,7 @@ pub async fn recording_start(
     // and forget — by the time VAD rotates the first chunk, the model is
     // already in Metal memory and inference is fast.
     if provider == "local" {
-        if let Ok(model_path) = local_model_path(&app) {
+        if let Ok(model_path) = local_model_path(&app, &language) {
             let shared = state.whisper.clone();
             tokio::spawn(async move {
                 if let Err(e) = local_whisper::prewarm(shared, model_path).await {
@@ -1223,7 +1262,7 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
 
     emit_status(&app, Some(&note_id), Phase::Retranscribing);
 
-    let model_path = local_model_path(&app).map_err(|e| anyhow::anyhow!(e))?;
+    let model_path = local_model_path(&app, &language).map_err(|e| anyhow::anyhow!(e))?;
     let shared = {
         let state: State<AppState> = app.state();
         state.whisper.clone()
@@ -1653,7 +1692,8 @@ async fn transcribe_chunk(
 
     let text = match cfg.provider.as_str() {
         "local" => {
-            let model_path = local_model_path(&app).map_err(|e| anyhow::anyhow!(e))?;
+            let model_path = local_model_path(&app, &cfg.language)
+                .map_err(|e| anyhow::anyhow!(e))?;
             let shared = {
                 let state: State<AppState> = app.state();
                 state.whisper.clone()

@@ -57,7 +57,11 @@ export type LocalWhisperModelStatus = {
   description: string;
   filename: string;
   sizeBytesHint: number;
-  languageFilter: string | null;
+  // "primary" — selectable as the active transcription model.
+  // "addon" — auto-applied for recordings whose language matches
+  // `addonLanguage`; never the active primary.
+  kind: "primary" | "addon";
+  addonLanguage: string | null;
   downloaded: boolean;
   sizeBytes: number | null;
   path: string | null;
