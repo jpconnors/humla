@@ -21,21 +21,29 @@ export function useSettings() {
   const [openaiKey, setOpenaiKey] = useState<KeyState>(EMPTY_KEY_STATE);
   const [local, setLocal] = useState<LocalState>(EMPTY_LOCAL_STATE);
   const [diarize, setDiarize] = useState<DiarizeState>(EMPTY_DIARIZE_STATE);
+  // Parallel state for the Sortformer engine. Tracked independently of
+  // community1 so each can be downloaded / deleted on its own. The active
+  // engine is decided by the `diarize_model` setting; the manager UI
+  // shows both rows so users can have one downloaded but the other active
+  // while they decide.
+  const [sortformer, setSortformer] = useState<DiarizeState>(EMPTY_DIARIZE_STATE);
   const [llmModels, setLlmModels] = useState<LlmModelsState>(EMPTY_LLM_MODELS_STATE);
   const [s, setS] = useState<Record<EditableKey, string>>(DEFAULTS);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [k1, models, ds] = await Promise.all([
+      const [k1, models, ds, ss] = await Promise.all([
         ipc.getApiKey(),
         ipc.localWhisperModels(),
-        ipc.diarizeStatus().catch(() => null),
+        ipc.diarizeStatus("community1").catch(() => null),
+        ipc.diarizeStatus("sortformer").catch(() => null),
       ]);
       if (cancelled) return;
       setOpenaiKey((p) => ({ ...p, hasKey: !!k1 }));
       setLocal((p) => ({ ...p, models }));
       setDiarize((p) => ({ ...p, status: ds }));
+      setSortformer((p) => ({ ...p, status: ss }));
       const entries = await Promise.all(
         (Object.keys(DEFAULTS) as EditableKey[]).map(
           async (key) => [key, (await ipc.getSetting(key)) ?? DEFAULTS[key]] as const,
@@ -77,7 +85,16 @@ export function useSettings() {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     onDiarizeDownloadProgress((p) => {
-      setDiarize((s) => ({ ...s, fraction: p.fraction, phase: p.phase }));
+      // Route the progress event to whichever engine's state it belongs
+      // to. Both engines share the channel; we filter by the engine
+      // tag the backend includes in the payload.
+      const update = (s: DiarizeState) => ({
+        ...s,
+        fraction: p.fraction,
+        phase: p.phase,
+      });
+      if (p.engine === "sortformer") setSortformer(update);
+      else setDiarize(update);
     }).then((u) => {
       if (cancelled) u();
       else unlisten = u;
@@ -101,6 +118,13 @@ export function useSettings() {
     setDiarize((p) => ({ ...p, flash: msg }));
     window.setTimeout(() => {
       setDiarize((p) => (p.flash === msg ? { ...p, flash: null } : p));
+    }, 4000);
+  }
+
+  function flashSortformer(msg: string) {
+    setSortformer((p) => ({ ...p, flash: msg }));
+    window.setTimeout(() => {
+      setSortformer((p) => (p.flash === msg ? { ...p, flash: null } : p));
     }, 4000);
   }
 
@@ -204,8 +228,8 @@ export function useSettings() {
       flash: null,
     });
     try {
-      await ipc.diarizeDownload();
-      const status = await ipc.diarizeStatus();
+      await ipc.diarizeDownload("community1");
+      const status = await ipc.diarizeStatus("community1");
       setDiarize({
         status,
         downloading: false,
@@ -214,9 +238,9 @@ export function useSettings() {
         error: null,
         flash: null,
       });
-      flashDiarize("Speaker diarization model downloaded");
+      flashDiarize("Community-1 model downloaded");
     } catch (e) {
-      const status = await ipc.diarizeStatus().catch(() => null);
+      const status = await ipc.diarizeStatus("community1").catch(() => null);
       setDiarize({
         status,
         downloading: false,
@@ -231,8 +255,8 @@ export function useSettings() {
   async function deleteDiarize() {
     const beforePath = diarize.status?.path;
     try {
-      await ipc.diarizeDelete();
-      const status = await ipc.diarizeStatus();
+      await ipc.diarizeDelete("community1");
+      const status = await ipc.diarizeStatus("community1");
       setDiarize({
         status,
         downloading: false,
@@ -242,10 +266,65 @@ export function useSettings() {
         flash: null,
       });
       flashDiarize(
-        beforePath ? `Deleted ${beforePath}` : "Speaker diarization model deleted",
+        beforePath ? `Deleted ${beforePath}` : "Community-1 model deleted",
       );
     } catch (e) {
       setDiarize((p) => ({ ...p, error: String(e) }));
+    }
+  }
+
+  async function downloadSortformer() {
+    setSortformer({
+      status: null,
+      downloading: true,
+      fraction: 0,
+      phase: null,
+      error: null,
+      flash: null,
+    });
+    try {
+      await ipc.diarizeDownload("sortformer");
+      const status = await ipc.diarizeStatus("sortformer");
+      setSortformer({
+        status,
+        downloading: false,
+        fraction: 0,
+        phase: null,
+        error: null,
+        flash: null,
+      });
+      flashSortformer("Sortformer model downloaded");
+    } catch (e) {
+      const status = await ipc.diarizeStatus("sortformer").catch(() => null);
+      setSortformer({
+        status,
+        downloading: false,
+        fraction: 0,
+        phase: null,
+        error: String(e),
+        flash: null,
+      });
+    }
+  }
+
+  async function deleteSortformer() {
+    const beforePath = sortformer.status?.path;
+    try {
+      await ipc.diarizeDelete("sortformer");
+      const status = await ipc.diarizeStatus("sortformer");
+      setSortformer({
+        status,
+        downloading: false,
+        fraction: 0,
+        phase: null,
+        error: null,
+        flash: null,
+      });
+      flashSortformer(
+        beforePath ? `Deleted ${beforePath}` : "Sortformer model deleted",
+      );
+    } catch (e) {
+      setSortformer((p) => ({ ...p, error: String(e) }));
     }
   }
 
@@ -290,6 +369,9 @@ export function useSettings() {
     diarize,
     downloadDiarize,
     deleteDiarize,
+    sortformer,
+    downloadSortformer,
+    deleteSortformer,
     llmModels,
     refreshLlmModels,
   };

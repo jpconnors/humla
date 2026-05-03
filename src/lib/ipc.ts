@@ -42,6 +42,7 @@ export type SettingsKey =
   | "local_whisper_use_gpu"
   | "final_pass"
   | "default_summary_preset"
+  | "diarize_model"
   | "custom_vocabulary"
   | "summary_model"
   | "summary_prompt"
@@ -95,7 +96,13 @@ export type DiarizeModelStatus = {
 export type DiarizeDownloadProgress = {
   fraction: number;
   phase: "listing" | "downloading" | "compiling";
+  // Which engine this progress belongs to. Both community1 and
+  // sortformer share the diarize_download_progress event channel; the
+  // frontend filters by this field.
+  engine: "community1" | "sortformer";
 };
+
+export type DiarizeEngine = "community1" | "sortformer";
 
 export const ipc = {
   listNotes: () => invoke<Note[]>("notes_list"),
@@ -138,9 +145,12 @@ export const ipc = {
   localWhisperDelete: (modelId: string) =>
     invoke<void>("local_whisper_delete", { modelId }),
 
-  diarizeStatus: () => invoke<DiarizeModelStatus>("diarize_status"),
-  diarizeDownload: () => invoke<void>("diarize_download"),
-  diarizeDelete: () => invoke<void>("diarize_delete"),
+  diarizeStatus: (engine?: DiarizeEngine) =>
+    invoke<DiarizeModelStatus>("diarize_status", { engine }),
+  diarizeDownload: (engine?: DiarizeEngine) =>
+    invoke<void>("diarize_download", { engine }),
+  diarizeDelete: (engine?: DiarizeEngine) =>
+    invoke<void>("diarize_delete", { engine }),
 
   localLlmListModels: (baseUrl: string) =>
     invoke<string[]>("local_llm_list_models", { baseUrl }),

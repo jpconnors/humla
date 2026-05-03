@@ -5,7 +5,7 @@ import FluidAudio
 // (with download additionally streaming progress lines as JSON before the
 // final payload). Exit 0 on success, 1 on failure with stderr message.
 //
-//   speaker-diarize <wav-path> [--num-speakers N]
+//   speaker-diarize <wav-path> [--num-speakers N] [--engine community1|sortformer]
 //                                — run offline diarization on a WAV file.
 //                                  Optional `--num-speakers N` pins the
 //                                  cluster count when the caller knows it
@@ -13,17 +13,27 @@ import FluidAudio
 //                                  person → N=2"). Without the flag, VBx
 //                                  decides cluster count on its own —
 //                                  which under-counts on conversations
-//                                  dominated by one speaker.
-//   speaker-diarize status       — model presence + size on disk
-//   speaker-diarize download     — download + compile the model (streams progress)
-//   speaker-diarize delete       — wipe the cached model directory
+//                                  dominated by one speaker. (community1
+//                                  only — Sortformer has a fixed 4-speaker
+//                                  cap and ignores the hint.)
+//   speaker-diarize status   [--engine community1|sortformer]
+//                                — model presence + size on disk
+//   speaker-diarize download [--engine community1|sortformer]
+//                                — download + compile (streams progress)
+//   speaker-diarize delete   [--engine community1|sortformer]
+//                                — wipe the cached model directory
 //
-// Backed by FluidAudio's `OfflineDiarizerManager` (community-1 segmentation +
-// VBx clustering with PLDA score normalisation). This is the upgrade from the
-// 3.1-based `DiarizerManager`, picked because community-1 counts and assigns
-// speakers more accurately on dense single-mic captures (e.g. an in-person
-// meeting where everyone shares one acoustic context — the failure mode that
-// drove this change was different humans collapsing onto the same cluster).
+// Default engine is `community1` (FluidAudio's `OfflineDiarizerManager` —
+// community-1 segmentation + VBx clustering with PLDA score normalisation).
+// The `sortformer` engine swaps in NVIDIA's Streaming Sortformer (4-speaker
+// end-to-end transformer) running in batch mode via `SortformerDiarizer.
+// processComplete(audioFileURL:)`. Sortformer trades the clustering
+// approach's cleanliness for materially better behaviour on rapid
+// speaker changes within a channel — the failure mode community-1 hits
+// its architectural ceiling on. We use the `highContextV2_1` variant
+// which expands chunkRightContext from 7 to 40 frames (~4s of right-side
+// lookahead) for the offline accuracy we want here, not the streaming
+// latency the default `fastV2_1` is tuned for.
 
 let args = CommandLine.arguments
 
@@ -40,9 +50,25 @@ func writeStdout(_ obj: Any) {
 }
 
 guard args.count >= 2 else {
-    writeStderr("usage: speaker-diarize (<wav-path>|status|download|delete)")
+    writeStderr(
+        "usage: speaker-diarize (<wav-path>|status|download|delete) [--engine community1|sortformer]"
+    )
     exit(2)
 }
+
+enum Engine: String {
+    case community1
+    case sortformer
+}
+
+func parseEngine(_ args: [String]) -> Engine {
+    if let i = args.firstIndex(of: "--engine"), i + 1 < args.count {
+        return Engine(rawValue: args[i + 1]) ?? .community1
+    }
+    return .community1
+}
+
+let engine = parseEngine(args)
 
 // CoreML models are .mlmodelc directories — `.size` on a directory only
 // reports the directory entry, not its contents. Walk recursively.
@@ -68,14 +94,34 @@ func directorySize(_ url: URL) -> Int64 {
 // `OfflineDiarizerModels.defaultModelsDirectory()`, the subdir name from
 // `Repo.diarizer.folderName`. We resolve the leaf path here so status/delete
 // inspect exactly what `OfflineDiarizerModels.load` writes.
-func offlineModelsDirectory() -> URL {
+func community1ModelsDirectory() -> URL {
     OfflineDiarizerModels
         .defaultModelsDirectory()
         .appendingPathComponent(Repo.diarizer.folderName, isDirectory: true)
 }
 
-func runStatus() {
-    let dir = offlineModelsDirectory()
+// Sortformer models live under
+// <Library/Application Support/FluidAudio/Models>/diar-streaming-sortformer-coreml/
+// per `SortformerModels.loadFromHuggingFace`'s default cache layout. We use
+// the highContextV2_1 variant for offline accuracy.
+let sortformerVariant: ModelNames.Sortformer.Variant = .highContextV2_1
+let sortformerConfig: SortformerConfig = .highContextV2_1
+
+func sortformerModelsDirectory() -> URL {
+    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("FluidAudio/Models", isDirectory: true)
+        .appendingPathComponent("diar-streaming-sortformer-coreml", isDirectory: true)
+}
+
+func sortformerModelPath() -> URL {
+    sortformerModelsDirectory()
+        .appendingPathComponent(sortformerVariant.fileName, isDirectory: true)
+}
+
+// MARK: - Status
+
+func runStatusCommunity1() {
+    let dir = community1ModelsDirectory()
     let exists = FileManager.default.fileExists(atPath: dir.path)
     if !exists {
         writeStdout([
@@ -85,11 +131,6 @@ func runStatus() {
         ] as [String: Any])
         return
     }
-    // Treat the directory as "downloaded" iff every required offline model
-    // file (segmentation, fbank, embedding, plda) plus the plda-parameters
-    // JSON is present. Partial-download leftovers report as not-downloaded
-    // so the UI prompts a re-download instead of pretending diarization will
-    // work.
     let required = ModelNames.OfflineDiarizer.requiredModels
     var allPresent = true
     for name in required {
@@ -107,15 +148,42 @@ func runStatus() {
     ] as [String: Any])
 }
 
+func runStatusSortformer() {
+    let modelPath = sortformerModelPath()
+    let exists = FileManager.default.fileExists(atPath: modelPath.path)
+    if !exists {
+        writeStdout([
+            "downloaded": false,
+            "path": NSNull(),
+            "sizeBytes": NSNull(),
+        ] as [String: Any])
+        return
+    }
+    let size = directorySize(modelPath)
+    writeStdout([
+        "downloaded": true,
+        "path": modelPath.path,
+        "sizeBytes": size,
+    ] as [String: Any])
+}
+
+// MARK: - Delete
+
 func runDelete() {
-    let dir = offlineModelsDirectory()
+    let dir: URL
+    switch engine {
+    case .community1: dir = community1ModelsDirectory()
+    case .sortformer: dir = sortformerModelsDirectory()
+    }
     if FileManager.default.fileExists(atPath: dir.path) {
         try? FileManager.default.removeItem(at: dir)
     }
     writeStdout(["deleted": true, "path": dir.path])
 }
 
-func runDownload() async -> Int32 {
+// MARK: - Download
+
+func runDownloadCommunity1() async -> Int32 {
     do {
         // `OfflineDiarizerModels.load` triggers downloadIfNeeded under the
         // hood and surfaces the same DownloadProgress phases as the streaming
@@ -142,7 +210,35 @@ func runDownload() async -> Int32 {
     }
 }
 
-func runDiarize(audioPath: String, numSpeakers: Int?) async -> Int32 {
+func runDownloadSortformer() async -> Int32 {
+    do {
+        _ = try await SortformerModels.loadFromHuggingFace(
+            config: sortformerConfig,
+            progressHandler: { progress in
+                let phase: String
+                switch progress.phase {
+                case .listing: phase = "listing"
+                case .downloading: phase = "downloading"
+                case .compiling: phase = "compiling"
+                }
+                writeStdout([
+                    "event": "progress",
+                    "fraction": progress.fractionCompleted,
+                    "phase": phase,
+                ] as [String: Any])
+            }
+        )
+        writeStdout(["event": "done"])
+        return 0
+    } catch {
+        writeStderr("download error: \(error)")
+        return 1
+    }
+}
+
+// MARK: - Diarize: community1
+
+func runDiarizeCommunity1(audioPath: String, numSpeakers: Int?) async -> Int32 {
     do {
         // Tuning notes for in-person meetings on a shared mic:
         //   - clusteringThreshold 0.4 (down from community default 0.6, and
@@ -214,22 +310,77 @@ func runDiarize(audioPath: String, numSpeakers: Int?) async -> Int32 {
     }
 }
 
+// MARK: - Diarize: Sortformer
+
+func runDiarizeSortformer(audioPath: String) async -> Int32 {
+    do {
+        let modelPath = sortformerModelPath()
+        guard FileManager.default.fileExists(atPath: modelPath.path) else {
+            writeStderr("humla-error: Sortformer model not downloaded")
+            return 1
+        }
+
+        let diarizer = SortformerDiarizer(config: sortformerConfig)
+        try await diarizer.initialize(mainModelPath: modelPath)
+
+        let url = URL(fileURLWithPath: audioPath)
+        let timeline = try diarizer.processComplete(audioFileURL: url)
+
+        // Flatten DiarizerTimeline → [{start_ms, end_ms, speaker_id}] in
+        // the same shape the community-1 path emits. Each speaker holds its
+        // own segments collection; merge them into a single time-sorted
+        // array using a stable "S<slot>" speaker_id string. We pull from
+        // both finalized and tentative buckets — processComplete with
+        // finalizeOnCompletion=true (its default) confirms everything, but
+        // tentative is kept in the union for robustness if that contract
+        // ever changes upstream.
+        var payload: [[String: Any]] = []
+        for (slot, speaker) in timeline.speakers {
+            let id = "S\(slot)"
+            let segs = speaker.finalizedSegments + speaker.tentativeSegments
+            for seg in segs {
+                payload.append([
+                    "start_ms": Int(seg.startTime * 1000.0),
+                    "end_ms": Int(seg.endTime * 1000.0),
+                    "speaker_id": id,
+                ])
+            }
+        }
+        payload.sort { (a, b) in
+            (a["start_ms"] as? Int ?? 0) < (b["start_ms"] as? Int ?? 0)
+        }
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data("\n".utf8))
+        return 0
+    } catch {
+        writeStderr("humla-error: \(error.localizedDescription)")
+        return 1
+    }
+}
+
 let semaphore = DispatchSemaphore(value: 0)
 var exitCode: Int32 = 0
 
 switch args[1] {
 case "status":
-    runStatus()
+    switch engine {
+    case .community1: runStatusCommunity1()
+    case .sortformer: runStatusSortformer()
+    }
 case "delete":
     runDelete()
 case "download":
     Task {
-        exitCode = await runDownload()
+        switch engine {
+        case .community1: exitCode = await runDownloadCommunity1()
+        case .sortformer: exitCode = await runDownloadSortformer()
+        }
         semaphore.signal()
     }
     semaphore.wait()
 default:
-    // Positional <wav-path>, optional `--num-speakers N` (in any position).
+    // Positional <wav-path>, optional `--num-speakers N` and `--engine` flags.
     let path = args[1]
     var numSpeakers: Int? = nil
     if let i = args.firstIndex(of: "--num-speakers"),
@@ -239,7 +390,12 @@ default:
         numSpeakers = n
     }
     Task {
-        exitCode = await runDiarize(audioPath: path, numSpeakers: numSpeakers)
+        switch engine {
+        case .community1:
+            exitCode = await runDiarizeCommunity1(audioPath: path, numSpeakers: numSpeakers)
+        case .sortformer:
+            exitCode = await runDiarizeSortformer(audioPath: path)
+        }
         semaphore.signal()
     }
     semaphore.wait()

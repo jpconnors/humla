@@ -22,6 +22,7 @@ export const DEFAULTS: Record<EditableKey, string> = {
   local_whisper_use_gpu: "true",
   final_pass: "true",
   default_summary_preset: "meeting",
+  diarize_model: "community1",
   custom_vocabulary: "",
   summary_model: "gpt-5.4-mini",
   summary_prompt: SUMMARY_PRESETS[0].prompt_no,

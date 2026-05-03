@@ -21,9 +21,22 @@ export function TranscriptionTab({
   diarize,
   downloadDiarize,
   deleteDiarize,
+  sortformer,
+  downloadSortformer,
+  deleteSortformer,
 }: Pick<
   SettingsHook,
-  "s" | "update" | "local" | "downloadModel" | "deleteModel" | "diarize" | "downloadDiarize" | "deleteDiarize"
+  | "s"
+  | "update"
+  | "local"
+  | "downloadModel"
+  | "deleteModel"
+  | "diarize"
+  | "downloadDiarize"
+  | "deleteDiarize"
+  | "sortformer"
+  | "downloadSortformer"
+  | "deleteSortformer"
 >) {
   const provider: Provider = (s.transcribe_provider as Provider) ?? "openai";
 
@@ -134,16 +147,58 @@ export function TranscriptionTab({
       </Section>
 
       <Section title="Speaker diarization">
-        <Row label="Model">
+        <p className="text-xs text-[var(--color-text-muted)]">
+          When downloaded and active, every recording is automatically
+          tagged with <code>Speaker 1:</code> / <code>Speaker 2:</code>
+          labels before polishing. Both engines run locally via CoreML /
+          Apple Neural Engine; pick whichever works better for your
+          recordings.
+        </p>
+        <Row label="Community-1 (clustering)">
+          <label className="flex items-center gap-2 cursor-pointer text-sm mb-2">
+            <input
+              type="radio"
+              name="diarize_model"
+              checked={s.diarize_model === "community1"}
+              disabled={!diarize.status?.downloaded}
+              onChange={() => update("diarize_model", "community1")}
+            />
+            Use Community-1 for new recordings
+          </label>
           <DiarizeModelManager
             state={diarize}
             onDownload={downloadDiarize}
             onDelete={deleteDiarize}
           />
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
-            When downloaded, every recording is automatically tagged with
-            <code> Speaker 1: </code>, <code> Speaker 2: </code> labels
-            before polishing. Runs locally via CoreML / Apple Neural Engine.
+            Pyannote community-1 segmentation + WeSpeaker embeddings + VBx
+            clustering. Strong baseline; auto-detects speaker count;
+            occasionally collapses on rapid back-and-forth in the same
+            channel.
+          </p>
+        </Row>
+        <Row label="Sortformer (end-to-end)">
+          <label className="flex items-center gap-2 cursor-pointer text-sm mb-2">
+            <input
+              type="radio"
+              name="diarize_model"
+              checked={s.diarize_model === "sortformer"}
+              disabled={!sortformer.status?.downloaded}
+              onChange={() => update("diarize_model", "sortformer")}
+            />
+            Use Sortformer for new recordings
+          </label>
+          <DiarizeModelManager
+            state={sortformer}
+            onDownload={downloadSortformer}
+            onDelete={deleteSortformer}
+          />
+          <p className="text-xs text-[var(--color-text-muted)] mt-2">
+            NVIDIA Sortformer running in batch over the saved WAV. Fixed
+            4-speaker cap, no count hint. Designed to handle rapid speaker
+            changes that the clustering approach struggles with — the
+            architectural answer if Community-1 keeps confusing your
+            speakers.
           </p>
         </Row>
       </Section>

@@ -19,6 +19,14 @@ const DEFAULT_LANGUAGE: &str = "no";
 const DEFAULT_TRANSCRIBE_PROVIDER: &str = "openai";
 const DEFAULT_TRANSCRIBE_MODEL: &str = "whisper-1";
 const DEFAULT_WHISPER_PRESET: &str = "quality";
+// Default diarization engine. community1 = FluidAudio's
+// OfflineDiarizerManager (the path we shipped through v0.11.0). Existing
+// installs keep this transparently. Users who hit the rapid-turn ceiling
+// can switch to "sortformer" in Settings → Transcription → Speaker
+// diarization. Both engines coexist; the user has to download whichever
+// they want before recording.
+const DEFAULT_DIARIZE_MODEL: &str = "community1";
+
 // Default ON: Apple Silicon Macs have working Metal and the speedup is
 // huge (~10× over BLAS). When `use_gpu` is true and Metal init fails at
 // runtime, whisper.cpp logs the failure and falls back to BLAS — but the
@@ -261,19 +269,41 @@ pub async fn api_key_test(state: State<'_, AppState>) -> Result<TestResult, Stri
 
 // ---- Speaker diarization model management ---------------------------------
 
-#[tauri::command]
-pub async fn diarize_status(app: AppHandle) -> Result<diarize::ModelStatus, String> {
-    diarize::status(&app).await.map_err(err)
+fn parse_engine(engine: Option<String>) -> diarize::Engine {
+    engine
+        .as_deref()
+        .map(diarize::Engine::from_setting)
+        .unwrap_or(diarize::Engine::Community1)
+}
+
+/// Resolve the active diarization engine from settings. Used by
+/// diarize_and_apply / final_pass_apply when they need to know which
+/// engine to call without the caller having to thread the value through.
+fn active_diarize_engine(state: &State<AppState>) -> diarize::Engine {
+    let conn = state.db.lock();
+    let id = db::get_setting(&conn, "diarize_model")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| DEFAULT_DIARIZE_MODEL.to_string());
+    diarize::Engine::from_setting(&id)
 }
 
 #[tauri::command]
-pub async fn diarize_download(app: AppHandle) -> Result<(), String> {
-    diarize::download(&app).await.map_err(err)
+pub async fn diarize_status(
+    app: AppHandle,
+    engine: Option<String>,
+) -> Result<diarize::ModelStatus, String> {
+    diarize::status(&app, parse_engine(engine)).await.map_err(err)
 }
 
 #[tauri::command]
-pub async fn diarize_delete(app: AppHandle) -> Result<(), String> {
-    diarize::delete(&app).await.map_err(err)
+pub async fn diarize_download(app: AppHandle, engine: Option<String>) -> Result<(), String> {
+    diarize::download(&app, parse_engine(engine)).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn diarize_delete(app: AppHandle, engine: Option<String>) -> Result<(), String> {
+    diarize::delete(&app, parse_engine(engine)).await.map_err(err)
 }
 
 // ---- Local Whisper model management ----------------------------------------
@@ -1062,7 +1092,7 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
     // guards before the long await on the sidecar. Also read the per-note
     // expected_speakers hint here while we're in the DB — passing the
     // resolved value forward keeps the long-await section free of locks.
-    let (mic_wav, sys_wav, chunks, snapshot, expected_speakers) = {
+    let (mic_wav, sys_wav, chunks, snapshot, expected_speakers, engine) = {
         let state: State<AppState> = app.state();
         let session = state.recording.lock();
         let mic = session.mic_full_wav_path.lock().clone();
@@ -1070,12 +1100,13 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
         let log = session.chunk_log.lock().clone();
         let snap = session.transcript_at_start.lock().clone();
         drop(session);
+        let eng = active_diarize_engine(&state);
         let conn = state.db.lock();
         let hint = db::get_note(&conn, &note_id)
             .ok()
             .and_then(|n| n.expected_speakers)
             .filter(|n| *n > 0);
-        (mic, sys, log, snap, hint)
+        (mic, sys, log, snap, hint, eng)
     };
     if chunks.is_empty() {
         eprintln!("diarize: no chunks captured, skipping");
@@ -1083,7 +1114,7 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
     }
     // Skip silently when the model isn't downloaded — diarization is
     // optional and the user might not have grabbed the model yet.
-    match diarize::status(&app).await {
+    match diarize::status(&app, engine).await {
         Ok(s) if s.downloaded => {}
         _ => {
             eprintln!("diarize: model not downloaded, skipping");
@@ -1122,7 +1153,7 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
                 );
                 return Ok(());
             };
-            let segments = diarize::diarize_file(&app, &wav, expected_speakers).await?;
+            let segments = diarize::diarize_file(&app, &wav, expected_speakers, engine).await?;
             if segments.is_empty() {
                 eprintln!("diarize: no segments returned for mic stream, leaving transcript untagged");
                 return Ok(());
@@ -1145,7 +1176,7 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
                 );
                 return Ok(());
             };
-            let segments = diarize::diarize_file(&app, &wav, expected_speakers).await?;
+            let segments = diarize::diarize_file(&app, &wav, expected_speakers, engine).await?;
             if segments.is_empty() {
                 eprintln!("diarize: no segments returned for sys stream, leaving transcript untagged");
                 return Ok(());
@@ -1198,7 +1229,7 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
                     );
                     single_speaker_fallback()
                 }
-                Some(wav) => match diarize::diarize_file(&app, &wav, sys_speaker_hint).await {
+                Some(wav) => match diarize::diarize_file(&app, &wav, sys_speaker_hint, engine).await {
                     Err(e) => {
                         eprintln!("diarize: sys diarize failed ({e}), falling back to single-speaker labels");
                         emit_error(
@@ -1301,13 +1332,14 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
 
     // Pull paths + transcribe config in one DB pass so the long awaits
     // below don't hold any locks.
-    let (mic_wav, sys_wav, snapshot, expected_speakers, language, whisper_preset, vocabulary) = {
+    let (mic_wav, sys_wav, snapshot, expected_speakers, language, whisper_preset, vocabulary, engine) = {
         let state: State<AppState> = app.state();
         let session = state.recording.lock();
         let mic = session.mic_full_wav_path.lock().clone();
         let sys = session.sys_full_wav_path.lock().clone();
         let snap = session.transcript_at_start.lock().clone();
         drop(session);
+        let eng = active_diarize_engine(&state);
         let conn = state.db.lock();
         let global_language = db::get_setting(&conn, "language")?
             .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
@@ -1321,7 +1353,7 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
         let preset = db::get_setting(&conn, "whisper_preset")?
             .unwrap_or_else(|| DEFAULT_WHISPER_PRESET.to_string());
         let vocab = db::get_setting(&conn, "custom_vocabulary")?.unwrap_or_default();
-        (mic, sys, snap, hint, lang, preset, vocab)
+        (mic, sys, snap, hint, lang, preset, vocab, eng)
     };
 
     if mic_wav.is_none() && sys_wav.is_none() {
@@ -1398,7 +1430,7 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
 
     // Skip diarization gracefully when the model isn't installed — drop to
     // a single label per stream rather than failing the whole final pass.
-    let diarize_available = matches!(diarize::status(&app).await, Ok(s) if s.downloaded);
+    let diarize_available = matches!(diarize::status(&app, engine).await, Ok(s) if s.downloaded);
 
     type Labeller = dyn Fn(&ChunkRecord) -> Option<String> + Send;
     let label_for_chunk: Box<Labeller> = match (mic_present, sys_present) {
@@ -1408,7 +1440,7 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
                     eprintln!("final_pass: mic segments present but mic_full.wav missing");
                     return Ok(());
                 };
-                let segments = diarize::diarize_file(&app, &wav, expected_speakers).await?;
+                let segments = diarize::diarize_file(&app, &wav, expected_speakers, engine).await?;
                 if segments.is_empty() {
                     Box::new(|_: &ChunkRecord| Some("Speaker 1".to_string()))
                 } else {
@@ -1428,7 +1460,7 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
                     eprintln!("final_pass: sys segments present but sys_full.wav missing");
                     return Ok(());
                 };
-                let segments = diarize::diarize_file(&app, &wav, expected_speakers).await?;
+                let segments = diarize::diarize_file(&app, &wav, expected_speakers, engine).await?;
                 if segments.is_empty() {
                     Box::new(|_: &ChunkRecord| Some("Speaker 1".to_string()))
                 } else {
@@ -1449,7 +1481,7 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
             let sys_speaker_hint = expected_speakers.map(|n| (n - 1).max(1));
             let sys_segments = if diarize_available {
                 if let Some(p) = sys_wav.as_ref() {
-                    diarize::diarize_file(&app, p, sys_speaker_hint)
+                    diarize::diarize_file(&app, p, sys_speaker_hint, engine)
                         .await
                         .unwrap_or_default()
                 } else {

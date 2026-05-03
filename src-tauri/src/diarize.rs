@@ -39,10 +39,46 @@ pub struct Segment {
 /// (exactly:)`, which is the most reliable fix for dominant-speaker
 /// recordings where VBx auto-detection collapses to one cluster. `None`
 /// leaves auto-detection on.
+/// Which diarization engine the sidecar should run.
+///
+/// `Community1` is FluidAudio's `OfflineDiarizerManager` (community-1
+/// segmentation + VBx clustering with PLDA). Strong baseline, but
+/// clustering-based approaches plateau on rapid within-channel speaker
+/// turns — the architectural ceiling that drove the Sortformer addition.
+///
+/// `Sortformer` is NVIDIA's Streaming Sortformer (4-speaker end-to-end
+/// transformer) running in batch via `SortformerDiarizer.processComplete`.
+/// We use the `highContextV2_1` variant (chunkRightContext=40 frames,
+/// ~4s of right-side lookahead) for offline accuracy, not the streaming
+/// latency the default `fastV2_1` is tuned for. Trade-off: 4-speaker hard
+/// cap (vs auto-detect on community-1), no num_speakers hint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Engine {
+    Community1,
+    Sortformer,
+}
+
+impl Engine {
+    pub fn from_setting(s: &str) -> Self {
+        match s {
+            "sortformer" => Engine::Sortformer,
+            _ => Engine::Community1,
+        }
+    }
+
+    fn arg(self) -> &'static str {
+        match self {
+            Engine::Community1 => "community1",
+            Engine::Sortformer => "sortformer",
+        }
+    }
+}
+
 pub async fn diarize_file(
     app: &AppHandle,
     audio_path: &Path,
     num_speakers: Option<i64>,
+    engine: Engine,
 ) -> Result<Vec<Segment>> {
     let sidecar = sidecar_path(app)?;
     let path_str = audio_path
@@ -51,8 +87,13 @@ pub async fn diarize_file(
 
     let mut cmd = Command::new(&sidecar);
     cmd.arg(path_str);
-    if let Some(n) = num_speakers.filter(|n| *n > 0) {
-        cmd.arg("--num-speakers").arg(n.to_string());
+    cmd.arg("--engine").arg(engine.arg());
+    // Sortformer has a fixed 4-speaker output cap and ignores hints —
+    // only forward the flag on the community-1 path.
+    if engine == Engine::Community1 {
+        if let Some(n) = num_speakers.filter(|n| *n > 0) {
+            cmd.arg("--num-speakers").arg(n.to_string());
+        }
     }
     let output = cmd
         .stdout(Stdio::piped())
@@ -218,7 +259,7 @@ pub struct ModelStatus {
 /// Returns Ok(downloaded=false) when the sidecar binary itself isn't
 /// installed — that lets the rest of the app behave as "diarization not
 /// available" rather than erroring out the user.
-pub async fn status(app: &AppHandle) -> Result<ModelStatus> {
+pub async fn status(app: &AppHandle, engine: Engine) -> Result<ModelStatus> {
     let sidecar = match sidecar_path(app) {
         Ok(p) => p,
         Err(_) => {
@@ -231,6 +272,8 @@ pub async fn status(app: &AppHandle) -> Result<ModelStatus> {
     };
     let output = Command::new(&sidecar)
         .arg("status")
+        .arg("--engine")
+        .arg(engine.arg())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -250,15 +293,22 @@ pub async fn status(app: &AppHandle) -> Result<ModelStatus> {
 pub struct DownloadProgress {
     pub fraction: f64,
     pub phase: String,
+    /// Which engine this progress event belongs to ("community1" or
+    /// "sortformer"). Both engines share the diarize_download_progress
+    /// event channel; the frontend filters by this field so simultaneous
+    /// downloads don't cross-pollute each other's progress bars.
+    pub engine: String,
 }
 
 /// Trigger the model download via the sidecar, emitting Tauri events for
 /// each progress line so the UI can show a progress bar. The sidecar handles
 /// FluidAudio's three-phase flow (listing → downloading → compiling).
-pub async fn download(app: &AppHandle) -> Result<()> {
+pub async fn download(app: &AppHandle, engine: Engine) -> Result<()> {
     let sidecar = sidecar_path(app)?;
     let mut child = Command::new(&sidecar)
         .arg("download")
+        .arg("--engine")
+        .arg(engine.arg())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -298,6 +348,7 @@ pub async fn download(app: &AppHandle) -> Result<()> {
                         .and_then(|p| p.as_str())
                         .unwrap_or("downloading")
                         .to_string(),
+                    engine: engine.arg().to_string(),
                 };
                 let _ = app.emit("diarize_download_progress", progress);
             }
@@ -316,10 +367,12 @@ pub async fn download(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
-pub async fn delete(app: &AppHandle) -> Result<()> {
+pub async fn delete(app: &AppHandle, engine: Engine) -> Result<()> {
     let sidecar = sidecar_path(app)?;
     let output = Command::new(&sidecar)
         .arg("delete")
+        .arg("--engine")
+        .arg(engine.arg())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
