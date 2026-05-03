@@ -3726,16 +3726,25 @@ fn strip_attribution_tail(text: &str) -> String {
 //     English meeting that happens to say "thanks for watching this demo").
 // We err on the side of keeping content; the silence gate above is the
 // primary defense.
-fn is_likely_hallucination(text: &str, language: &str) -> bool {
+fn is_likely_hallucination(text: &str, _language: &str) -> bool {
     let t = text.trim();
     if t.is_empty() {
         return true;
     }
-    if language == "en" || t.len() > 120 {
+    // Punctuation-only output is always Whisper hallucinating on
+    // silence: ".", "...", "*", standalone emoji, etc.
+    if !t.chars().any(|c| c.is_alphanumeric()) {
+        return true;
+    }
+    // Long output is real speech (or a real loop, which the
+    // repetition-collapse filter handles separately).
+    if t.len() > 120 {
         return false;
     }
     let lower = t.to_lowercase();
-    const FRAGMENTS: &[&str] = &[
+    // Caption-attribution patterns. Substring match because these
+    // sometimes appear glued to the tail of real speech.
+    const ATTRIBUTION_FRAGMENTS: &[&str] = &[
         "thanks for watching",
         "thank you for watching",
         "subscribe to",
@@ -3744,7 +3753,44 @@ fn is_likely_hallucination(text: &str, language: &str) -> bool {
         "amara.org",
         "transcribed by",
     ];
-    FRAGMENTS.iter().any(|f| lower.contains(f))
+    if ATTRIBUTION_FRAGMENTS.iter().any(|f| lower.contains(f)) {
+        return true;
+    }
+    // Short single-utterance silence hallucinations across major
+    // languages. Whisper falls back to high-prior greeting / thanks
+    // tokens when fed low-SNR audio; the user reported "Hei.",
+    // "Takk!", "Hi." appearing repeatedly between real speech with
+    // no audio actually containing those words. Match the
+    // punctuation-stripped, whitespace-collapsed lowercase form
+    // exactly so longer sentences containing these words pass
+    // through unaffected.
+    //
+    // Deliberately NOT in the drop list: "yes/no/ja/nei/oui/non/ok"
+    // — those are common real one-word answers, and dropping them
+    // is more disruptive than the rare hallucination they'd catch.
+    let normalized: String = t
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    const SHORT_HALLUCINATIONS: &[&str] = &[
+        // EN
+        "hi", "hello", "bye", "thanks", "thank you", "okay", "yeah",
+        // NO/DA/SV
+        "hei", "hej", "hallo", "takk", "tak", "tack", "ha det",
+        // DE
+        "danke", "tschuss", "tschüss",
+        // FR
+        "merci", "bonjour", "au revoir", "salut",
+        // ES
+        "hola", "gracias", "adios",
+        // JA
+        "ありがとう", "こんにちは", "さようなら",
+    ];
+    SHORT_HALLUCINATIONS.contains(&normalized.as_str())
 }
 
 /// Detect a chunk whose output is dominated by N-gram repetition — Whisper's
@@ -4255,5 +4301,67 @@ mod repetition_tests {
         // be matched as identical reps.
         let s = "Er det en bok? er det en bok! Er Det En Bok? er det en bok.";
         assert!(is_repetition_collapse(s));
+    }
+}
+
+#[cfg(test)]
+mod hallucination_tests {
+    use super::*;
+
+    #[test]
+    fn drops_punctuation_only() {
+        assert!(is_likely_hallucination(".", "no"));
+        assert!(is_likely_hallucination("...", "no"));
+        assert!(is_likely_hallucination(" . ", "no"));
+        assert!(is_likely_hallucination("***", "en"));
+    }
+
+    #[test]
+    fn drops_norwegian_silence_greetings() {
+        assert!(is_likely_hallucination("Hei.", "no"));
+        assert!(is_likely_hallucination("Hei!", "no"));
+        assert!(is_likely_hallucination("Takk!", "no"));
+        assert!(is_likely_hallucination("Hallo.", "no"));
+        assert!(is_likely_hallucination("Ha det.", "no"));
+    }
+
+    #[test]
+    fn drops_english_silence_greetings() {
+        assert!(is_likely_hallucination("Hi.", "en"));
+        assert!(is_likely_hallucination("Hello!", "en"));
+        assert!(is_likely_hallucination("Thanks!", "en"));
+        assert!(is_likely_hallucination("Thank you.", "en"));
+    }
+
+    #[test]
+    fn keeps_real_one_word_answers() {
+        // Yes / no / ja / nei are real responses too often to drop.
+        assert!(!is_likely_hallucination("Yes.", "en"));
+        assert!(!is_likely_hallucination("No.", "en"));
+        assert!(!is_likely_hallucination("Ja.", "no"));
+        assert!(!is_likely_hallucination("Nei.", "no"));
+        assert!(!is_likely_hallucination("OK", "en"));
+    }
+
+    #[test]
+    fn keeps_real_speech_containing_greeting_words() {
+        assert!(!is_likely_hallucination(
+            "Hei, hvordan går det med deg i dag?",
+            "no"
+        ));
+        assert!(!is_likely_hallucination(
+            "I just wanted to say thanks for the help yesterday.",
+            "en"
+        ));
+    }
+
+    #[test]
+    fn drops_caption_attribution_inside_real_speech() {
+        // Substring match — caption attribution glued to a real
+        // sentence should still trigger the drop.
+        assert!(is_likely_hallucination(
+            "And that was the meeting. Subtitles by Amara.org community.",
+            "en"
+        ));
     }
 }
