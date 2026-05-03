@@ -1247,8 +1247,14 @@ pub async fn recording_start(
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
 
-    // Drain stderr in the background so the pipe never fills, and surface
-    // anything written there as a recording_error so silent failures aren't.
+    // Drain stderr in the background so the pipe never fills. Only the
+    // sidecar's own `humla-error:`-prefixed lines get surfaced to the
+    // user as a recording_error toast — anything else is treated as
+    // dev-time diagnostic noise and only mirrored to our own stderr.
+    // Without this filter, the Swift side's verbose `scstream: …`
+    // debug lines would each pop up as a "Recording issue" toast,
+    // which is what the user reported when the SCK debug logging
+    // landed.
     {
         let app_err = app.clone();
         let note_id_err = note_id.clone();
@@ -1258,10 +1264,12 @@ pub async fn recording_start(
                 let trimmed = line.trim();
                 if trimmed.is_empty() { continue; }
                 eprintln!("audio-capture stderr: {trimmed}");
-                let _ = app_err.emit("recording_error", ErrorPayload {
-                    note_id: Some(note_id_err.clone()),
-                    message: format!("audio-capture: {trimmed}"),
-                });
+                if let Some(msg) = trimmed.strip_prefix("humla-error: ") {
+                    let _ = app_err.emit("recording_error", ErrorPayload {
+                        note_id: Some(note_id_err.clone()),
+                        message: format!("audio-capture: {msg}"),
+                    });
+                }
             }
         });
     }
