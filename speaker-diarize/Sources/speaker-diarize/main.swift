@@ -341,8 +341,15 @@ func runDiarizeSortformer(
         if let s = silenceThreshold { config.silenceThreshold = s }
         if let p = predScoreThreshold { config.predScoreThreshold = p }
 
+        // Use loadFromHuggingFace rather than initialize(mainModelPath:):
+        // the latter calls MLModel.compileModel(at:) which expects a raw
+        // .mlpackage, but FluidAudio's downloader writes the already-
+        // compiled .mlmodelc. loadFromHuggingFace handles both — when
+        // the model is already cached it's a quick load, no re-download.
+        let models = try await SortformerModels.loadFromHuggingFace(config: config)
+
         let diarizer = SortformerDiarizer(config: config)
-        try await diarizer.initialize(mainModelPath: modelPath)
+        diarizer.initialize(models: models)
 
         let url = URL(fileURLWithPath: audioPath)
         let timeline = try diarizer.processComplete(audioFileURL: url)
