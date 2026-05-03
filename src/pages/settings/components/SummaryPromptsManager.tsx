@@ -20,6 +20,10 @@ export function SummaryPromptsManager({ language }: { language: string }) {
   // swap the row's buttons to Cancel + Confirm delete on first click.
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  useEffect(() => {
+    ipc.summaryPromptsList().then(setPrompts).catch((e) => setError(String(e)));
+  }, []);
+
   async function refresh() {
     const next = await ipc.summaryPromptsList();
     setPrompts(next);
