@@ -303,7 +303,18 @@ export function Note() {
 
         {showSummarySection && (
           <Card className="mt-8">
-            <h2 className="nd-label mb-4">Summary</h2>
+            <div className="flex items-baseline gap-3 mb-4">
+              <h2 className="nd-label">Summary</h2>
+              {isSummarizing && hasSummary && (
+                <span className="text-xs text-[var(--color-text-muted)] flex items-center gap-1.5">
+                  <span
+                    className="inline-block w-2 h-2 rounded-full bg-[var(--color-text-muted)] animate-pulse"
+                    aria-hidden
+                  />
+                  Regenerating…
+                </span>
+              )}
+            </div>
             {/* Live reasoning trace: shown only on local LLM providers
                 while the model is thinking. Cloud OpenAI doesn't stream
                 a thinking trace through this path (reasoning models keep
@@ -338,12 +349,22 @@ export function Note() {
                 )}
               </div>
             )}
-            {hasSummary ? (
+            {/* Render priority: streaming first while summarizing (so the
+                user sees the model working when re-running on a note that
+                already has a saved summary), then the saved summary, then
+                the streaming as a first-time fallback, then a skeleton.
+                Without the isSummarizing guard, hasSummary would always
+                win and the streaming would be invisible behind the cached
+                summary — minutes of "nothing happening" on local LLMs. */}
+            {isSummarizing && contentStream.length > 0 ? (
+              <div className="prose-summary text-base leading-relaxed">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{contentStream}</ReactMarkdown>
+              </div>
+            ) : hasSummary ? (
               <div className="prose-summary text-base leading-relaxed">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft.summary}</ReactMarkdown>
               </div>
             ) : contentStream.length > 0 ? (
-              // Content is streaming in — render markdown live as it arrives.
               <div className="prose-summary text-base leading-relaxed">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{contentStream}</ReactMarkdown>
               </div>
