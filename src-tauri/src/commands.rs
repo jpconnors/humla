@@ -768,6 +768,15 @@ pub async fn recording_stop(
     // runs in either case as a strict typo-and-punctuation cleanup.
     let app_for_post = app.clone();
     let note_for_post = note_id.clone();
+    // Move temp_dir into the post-stop task and clean it up *after* polish
+    // completes. The previous design ran a parallel 30s-delay cleanup, which
+    // worked when post-stop took ~10–30s (chunked diarize + polish) but
+    // races the final pass: re-transcribing a 30-minute recording takes
+    // several minutes, the cleanup fires mid-flight, and the diarize sidecar
+    // then tries to open a file that's been deleted out from under it
+    // (surfaces as a CoreAudio "wht?" / 2003334207 error from FluidAudio's
+    // AVAudioFile reader). Sequencing cleanup behind the chain ensures the
+    // full WAVs survive for as long as any post-stop step needs them.
     tokio::spawn(async move {
         let use_final_pass = {
             let state: State<AppState> = app_for_post.state();
@@ -814,16 +823,15 @@ pub async fn recording_stop(
                 &format!("Polish failed: {e}"),
             );
         }
+        // Now that every step that needs the WAVs has finished, drop the
+        // temp dir. Best-effort: a leftover dir is harmless and gets
+        // collected by macOS's normal /tmp cleanup eventually.
+        if let Some(dir) = temp_dir {
+            let _ = tokio::fs::remove_dir_all(dir).await;
+        }
         emit_status(&app_for_post, None, Phase::Idle);
     });
 
-    if let Some(dir) = temp_dir {
-        // Best-effort cleanup later; keep until summary is in the DB.
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-            let _ = tokio::fs::remove_dir_all(dir).await;
-        });
-    }
     Ok(())
 }
 
