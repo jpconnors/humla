@@ -217,13 +217,13 @@ export function TranscriptionTab({
                   type="text"
                   value={s.community1_threshold}
                   onChange={(e) => update("community1_threshold", e.target.value)}
-                  placeholder="0.4"
+                  placeholder="0.5"
                   className={inputClass + " w-32"}
                   style={{ fontFamily: "var(--font-mono)" }}
                 />
                 <p className="text-xs text-[var(--color-text-muted)] mt-1">
                   Higher = more aggressive separation (more speakers).
-                  Lower = more merging. Default 0.4. Community-1 only.
+                  Lower = more merging. Default 0.5. Community-1 only.
                 </p>
               </div>
               <div>
@@ -234,13 +234,13 @@ export function TranscriptionTab({
                   type="text"
                   value={s.sortformer_silence_threshold}
                   onChange={(e) => update("sortformer_silence_threshold", e.target.value)}
-                  placeholder="0.2"
+                  placeholder="0.5"
                   className={inputClass + " w-32"}
                   style={{ fontFamily: "var(--font-mono)" }}
                 />
                 <p className="text-xs text-[var(--color-text-muted)] mt-1">
                   Sum of speaker probabilities below which a frame is
-                  treated as silence. Default 0.2.
+                  treated as silence. Default 0.5.
                 </p>
               </div>
               <div>

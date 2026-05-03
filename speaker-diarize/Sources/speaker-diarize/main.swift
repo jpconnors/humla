@@ -264,7 +264,7 @@ func runDiarizeCommunity1(audioPath: String, numSpeakers: Int?, threshold: Doubl
         //   - exclusiveSegments stays true (default): output is non-overlapping
         //     so each chunk maps to exactly one speaker for the chunk-to-
         //     segment alignment in commands.rs::assign_speaker.
-        var config = OfflineDiarizerConfig(clusteringThreshold: threshold ?? 0.4)
+        var config = OfflineDiarizerConfig(clusteringThreshold: threshold ?? 0.5)
         // Caller-supplied speaker count hint when the user knows the count
         // ahead of time. `withSpeakers(exactly:)` overrides the auto cluster
         // detection inside VBx — without it, VBx is free to pick any

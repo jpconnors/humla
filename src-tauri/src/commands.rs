@@ -33,8 +33,8 @@ const DEFAULT_DIARIZE_MODEL: &str = "community1";
 // → Speaker diarization → Advanced when iterating on recordings the
 // stock thresholds get wrong. Stored as strings (settings table is
 // string-keyed); parsed at use site.
-const DEFAULT_COMMUNITY1_THRESHOLD: &str = "0.4";
-const DEFAULT_SORTFORMER_SILENCE_THRESHOLD: &str = "0.2";
+const DEFAULT_COMMUNITY1_THRESHOLD: &str = "0.5";
+const DEFAULT_SORTFORMER_SILENCE_THRESHOLD: &str = "0.5";
 const DEFAULT_SORTFORMER_PRED_THRESHOLD: &str = "0.25";
 
 // Off by default — recordings live in the temp dir for the duration of
@@ -1000,23 +1000,28 @@ async fn maybe_keep_audio(app: &AppHandle, note_id: &str) {
     }
 }
 
-/// Read the user-tunable diarizer thresholds from settings. Anything
-/// missing or unparseable falls back to None — the sidecar then uses
-/// its built-in defaults. We don't paper over a malformed value because
-/// silently picking 0.4 when the user typed "abc" hides the bug.
+/// Read the user-tunable diarizer thresholds from settings. Missing
+/// values fall back to the DEFAULT_* constants at the top of this file
+/// so a fresh DB (no settings rows yet) uses the same numbers the
+/// settings UI shows. Unparseable values still drop to None — we don't
+/// paper over a malformed value because silently picking the default
+/// when the user typed "abc" hides the bug.
 fn read_diarize_thresholds(state: &State<AppState>) -> diarize::Thresholds {
     let conn = state.db.lock();
     let community1_clustering = db::get_setting(&conn, "community1_threshold")
         .ok()
         .flatten()
+        .or_else(|| Some(DEFAULT_COMMUNITY1_THRESHOLD.to_string()))
         .and_then(|s| s.parse::<f64>().ok());
     let sortformer_silence = db::get_setting(&conn, "sortformer_silence_threshold")
         .ok()
         .flatten()
+        .or_else(|| Some(DEFAULT_SORTFORMER_SILENCE_THRESHOLD.to_string()))
         .and_then(|s| s.parse::<f32>().ok());
     let sortformer_pred = db::get_setting(&conn, "sortformer_pred_threshold")
         .ok()
         .flatten()
+        .or_else(|| Some(DEFAULT_SORTFORMER_PRED_THRESHOLD.to_string()))
         .and_then(|s| s.parse::<f32>().ok());
     diarize::Thresholds {
         community1_clustering,
