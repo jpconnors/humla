@@ -727,20 +727,29 @@ signal(SIGINT, SIG_IGN)
 
 let shutdown: () -> Void = {
     Task {
-        if let s = scStream {
-            try? await s.stopCapture()
-        }
+        // Close all writers FIRST, before any async cleanup that
+        // might block. ScreenCaptureKit's `stopCapture()` has been
+        // observed to take multiple seconds — if we await it before
+        // closing the writers, the parent's SIGTERM grace window can
+        // expire and SIGKILL truncates this process before any
+        // `chunk` / `full_recording` / `stopped` events reach
+        // stdout. That manifests on the user's side as "the last
+        // 20–30 s of audio never gets transcribed" because the
+        // chunks for that tail were ready to emit but never did.
+        // engine.stop() is synchronous and returns immediately;
+        // ChunkWriter.close() is also synchronous (queue.sync).
         engine.stop()
-        // Order matters: emit `full_recording` events BEFORE `stopped` so the
-        // Rust reader sees both full WAV paths before its loop breaks out on
-        // `stopped`. Each ChunkWriter.close() emits its final chunk (if any);
-        // the single `stopped` event signals end-of-stream for the entire
-        // sidecar (both sources finished).
         micFullWriter.close()
         sysFullWriter.close()
         micWriter.close()
         sysWriter.close()
         emit(["event": "stopped"])
+        // Now best-effort SCK shutdown for cleanliness. If it stalls,
+        // we've already emitted everything the parent needs and the
+        // OS will reclaim resources on exit.
+        if let s = scStream {
+            try? await s.stopCapture()
+        }
         exit(0)
     }
 }

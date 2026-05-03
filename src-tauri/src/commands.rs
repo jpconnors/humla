@@ -1714,14 +1714,20 @@ pub async fn recording_stop(
 
     if let Some(mut child) = child {
         // Send SIGTERM so the Swift sidecar runs its shutdown handler:
-        // drains the mixer, finalizes the current WAV file, emits the partial
-        // chunk. Then wait up to 3 seconds for it to exit gracefully before
-        // falling back to SIGKILL.
+        // closes the writers (emitting any final chunk + full_recording
+        // events), emits `stopped`, then exits. Wait up to 8 s for a
+        // graceful exit before falling back to SIGKILL. 8 s is generous
+        // for a normal stop (writer.close is synchronous and fast), but
+        // ScreenCaptureKit's `stopCapture()` has been observed to stall
+        // for multiple seconds; the sidecar now closes writers BEFORE
+        // awaiting stopCapture, but the longer grace gives an extra
+        // safety margin so SIGKILL never truncates emitted-but-unread
+        // chunk events.
         if let Some(pid) = child.id() {
             #[cfg(unix)]
             unsafe { libc::kill(pid as i32, libc::SIGTERM); }
         }
-        let waited = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(8), child.wait()).await;
         if waited.is_err() {
             let _ = child.kill().await;
             let _ = child.wait().await;
