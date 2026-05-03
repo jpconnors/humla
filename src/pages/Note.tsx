@@ -1018,9 +1018,16 @@ function escapeHtml(s: string): string {
 // diarize run has dumped its JSON, audio only when keep_audio was on
 // at recording time. Clicks open the folder in Finder via Tauri's
 // shell plugin (works on both files and directories on macOS).
+//
+// Re-polls on every recording-phase transition so the post-stop
+// chain's diagnostic write becomes visible without a page refresh:
+// the diarize/retranscribe/polish phases all write files mid-flight,
+// and depending only on `noteId` (which doesn't change) would leave
+// the link hidden until the user navigated away and back.
 function DiagnosticsLinks({ noteId }: { noteId: string }) {
   const [diagFiles, setDiagFiles] = useState<string[]>([]);
   const [audioFiles, setAudioFiles] = useState<string[]>([]);
+  const phase = useRecordingStore((s) => s.status.phase);
 
   useEffect(() => {
     let cancelled = false;
@@ -1037,7 +1044,7 @@ function DiagnosticsLinks({ noteId }: { noteId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [noteId]);
+  }, [noteId, phase]);
 
   const hasDiag = diagFiles.length > 0;
   const hasAudio = audioFiles.length > 0;
