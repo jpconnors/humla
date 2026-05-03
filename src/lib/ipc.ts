@@ -39,6 +39,7 @@ export type SettingsKey =
   | "transcribe_model"
   | "whisper_preset"
   | "local_whisper_model"
+  | "local_whisper_use_gpu"
   | "final_pass"
   | "custom_vocabulary"
   | "summary_model"

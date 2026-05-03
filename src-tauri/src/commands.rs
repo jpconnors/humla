@@ -19,6 +19,13 @@ const DEFAULT_LANGUAGE: &str = "no";
 const DEFAULT_TRANSCRIBE_PROVIDER: &str = "openai";
 const DEFAULT_TRANSCRIBE_MODEL: &str = "whisper-1";
 const DEFAULT_WHISPER_PRESET: &str = "quality";
+// Default ON: Apple Silicon Macs have working Metal and the speedup is
+// huge (~10× over BLAS). When `use_gpu` is true and Metal init fails at
+// runtime, whisper.cpp logs the failure and falls back to BLAS — but the
+// failed compile is noisy and adds startup time. Users on machines where
+// Metal is broken (e.g. macOS Metal compiler rejecting the bundled
+// shader) can flip this off in Settings to skip the failed init entirely.
+const DEFAULT_LOCAL_WHISPER_USE_GPU: &str = "true";
 // Final pass: re-transcribe the whole recording from the saved full WAV
 // after stop, instead of trusting the live chunked output. Default ON for
 // new installs because it's the higher-quality path; the user can turn it
@@ -243,6 +250,15 @@ fn model_path_for(app: &AppHandle, info: &local_whisper::ModelInfo) -> Result<Pa
 /// Returns the resolved path even when the file doesn't exist on disk —
 /// that's how the caller's "not downloaded" error surfaces with a real
 /// path the user can recognise.
+fn local_whisper_use_gpu_setting(state: &State<AppState>) -> bool {
+    let conn = state.db.lock();
+    db::get_setting(&conn, "local_whisper_use_gpu")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| DEFAULT_LOCAL_WHISPER_USE_GPU.to_string())
+        != "false"
+}
+
 fn local_model_path(app: &AppHandle, language: &str) -> Result<PathBuf, String> {
     let dir = local_model_dir(app)?;
     if let Some(addon) = local_whisper::addon_for_language(language) {
@@ -606,9 +622,10 @@ pub async fn recording_start(
     // already in Metal memory and inference is fast.
     if provider == "local" {
         if let Ok(model_path) = local_model_path(&app, &language) {
+            let use_gpu = local_whisper_use_gpu_setting(&state);
             let shared = state.whisper.clone();
             tokio::spawn(async move {
-                if let Err(e) = local_whisper::prewarm(shared, model_path).await {
+                if let Err(e) = local_whisper::prewarm(shared, model_path, use_gpu).await {
                     eprintln!("whisper prewarm: {e}");
                 }
             });
@@ -1263,9 +1280,9 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
     emit_status(&app, Some(&note_id), Phase::Retranscribing);
 
     let model_path = local_model_path(&app, &language).map_err(|e| anyhow::anyhow!(e))?;
-    let shared = {
+    let (shared, use_gpu) = {
         let state: State<AppState> = app.state();
-        state.whisper.clone()
+        (state.whisper.clone(), local_whisper_use_gpu_setting(&state))
     };
     let preset = local_whisper::Preset::from_setting(&whisper_preset);
     // No trail snapshot here — whisper's own 30s sliding window handles
@@ -1277,6 +1294,7 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
         local_whisper::transcribe_file_segments(
             shared.clone(),
             model_path.clone(),
+            use_gpu,
             &language,
             prompt.as_deref(),
             preset,
@@ -1290,6 +1308,7 @@ async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()>
         local_whisper::transcribe_file_segments(
             shared.clone(),
             model_path.clone(),
+            use_gpu,
             &language,
             prompt.as_deref(),
             preset,
@@ -1694,14 +1713,15 @@ async fn transcribe_chunk(
         "local" => {
             let model_path = local_model_path(&app, &cfg.language)
                 .map_err(|e| anyhow::anyhow!(e))?;
-            let shared = {
+            let (shared, use_gpu) = {
                 let state: State<AppState> = app.state();
-                state.whisper.clone()
+                (state.whisper.clone(), local_whisper_use_gpu_setting(&state))
             };
             let preset = local_whisper::Preset::from_setting(&cfg.whisper_preset);
             local_whisper::transcribe_file(
                 shared,
                 model_path,
+                use_gpu,
                 &cfg.language,
                 prompt.as_deref(),
                 preset,

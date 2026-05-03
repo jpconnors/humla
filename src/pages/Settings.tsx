@@ -23,6 +23,7 @@ const DEFAULTS: Record<EditableKey, string> = {
   transcribe_model: "whisper-1",
   whisper_preset: "quality",
   local_whisper_model: "large-v3-turbo-q5",
+  local_whisper_use_gpu: "true",
   final_pass: "true",
   custom_vocabulary: "",
   summary_model: "gpt-5.4-mini",
@@ -448,6 +449,27 @@ export function Settings() {
                 an aggressive no-speech threshold so almost no segments are
                 silently dropped — best for meetings and dense speech. Fast
                 falls back to greedy decoding for live-caption snappiness.
+              </p>
+            </Row>
+          )}
+          {provider === "local" && (
+            <Row label="GPU acceleration">
+              <label className="flex items-center gap-2 cursor-pointer text-sm">
+                <input
+                  type="checkbox"
+                  checked={s.local_whisper_use_gpu !== "false"}
+                  onChange={(e) =>
+                    update("local_whisper_use_gpu", e.target.checked ? "true" : "false")
+                  }
+                />
+                Use Metal (Apple GPU) for Whisper inference
+              </label>
+              <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                On by default — gives ~10× speedup over CPU on Apple
+                Silicon. Turn off if Whisper logs Metal compile errors
+                like <code>ggml_backend_metal_init: failed to allocate
+                context</code>; the app falls back to CPU/BLAS, which is
+                slower but reliable.
               </p>
             </Row>
           )}

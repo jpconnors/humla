@@ -123,6 +123,7 @@ pub type SharedContext = Arc<Mutex<Option<LoadedModel>>>;
 
 pub struct LoadedModel {
     pub path: PathBuf,
+    pub use_gpu: bool,
     pub ctx: Arc<WhisperContext>,
 }
 
@@ -186,10 +187,14 @@ impl Preset {
     }
 }
 
-fn ensure_loaded(shared: &SharedContext, model_path: &Path) -> Result<Arc<WhisperContext>> {
+fn ensure_loaded(
+    shared: &SharedContext,
+    model_path: &Path,
+    use_gpu: bool,
+) -> Result<Arc<WhisperContext>> {
     let mut guard = shared.lock();
     if let Some(loaded) = guard.as_ref() {
-        if loaded.path == model_path {
+        if loaded.path == model_path && loaded.use_gpu == use_gpu {
             return Ok(loaded.ctx.clone());
         }
     }
@@ -199,13 +204,25 @@ fn ensure_loaded(shared: &SharedContext, model_path: &Path) -> Result<Arc<Whispe
             model_path.display()
         ));
     }
+    // Drop the previously loaded model BEFORE allocating the new one.
+    // Metal contexts share unified memory and a freshly constructed
+    // WhisperContext briefly coexists with the old one if we don't
+    // explicitly clear the slot first — enough on memory-tight machines
+    // to push Metal into "failed to allocate context" territory.
+    *guard = None;
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu = use_gpu;
     let ctx = WhisperContext::new_with_params(
         model_path.to_str().ok_or_else(|| anyhow!("non-utf8 model path"))?,
-        WhisperContextParameters::default(),
+        params,
     )
     .map_err(|e| anyhow!("load whisper model: {e}"))?;
     let arc = Arc::new(ctx);
-    *guard = Some(LoadedModel { path: model_path.to_path_buf(), ctx: arc.clone() });
+    *guard = Some(LoadedModel {
+        path: model_path.to_path_buf(),
+        use_gpu,
+        ctx: arc.clone(),
+    });
     Ok(arc)
 }
 
@@ -218,9 +235,9 @@ pub fn unload(shared: &SharedContext) {
 /// chunk doesn't pay the 1–2 second cold-start tax — by the time VAD
 /// rotates the first chunk (≥ 1 s of speech + 500 ms silence), the model
 /// is ready and inference runs at ~5× realtime.
-pub async fn prewarm(shared: SharedContext, model_path: PathBuf) -> Result<()> {
+pub async fn prewarm(shared: SharedContext, model_path: PathBuf, use_gpu: bool) -> Result<()> {
     tokio::task::spawn_blocking(move || -> Result<()> {
-        ensure_loaded(&shared, &model_path)?;
+        ensure_loaded(&shared, &model_path, use_gpu)?;
         Ok(())
     })
     .await
@@ -230,14 +247,22 @@ pub async fn prewarm(shared: SharedContext, model_path: PathBuf) -> Result<()> {
 pub async fn transcribe_file(
     shared: SharedContext,
     model_path: PathBuf,
+    use_gpu: bool,
     language: &str,
     initial_prompt: Option<&str>,
     preset: Preset,
     audio_path: &Path,
 ) -> Result<String> {
-    let segs =
-        transcribe_file_segments(shared, model_path, language, initial_prompt, preset, audio_path)
-            .await?;
+    let segs = transcribe_file_segments(
+        shared,
+        model_path,
+        use_gpu,
+        language,
+        initial_prompt,
+        preset,
+        audio_path,
+    )
+    .await?;
     let mut out = String::new();
     for seg in segs {
         if !out.is_empty() && !out.ends_with(' ') {
@@ -262,6 +287,7 @@ pub struct TextSegment {
 pub async fn transcribe_file_segments(
     shared: SharedContext,
     model_path: PathBuf,
+    use_gpu: bool,
     language: &str,
     initial_prompt: Option<&str>,
     preset: Preset,
@@ -275,7 +301,7 @@ pub async fn transcribe_file_segments(
     // don't stall the tokio reactor. Each call gets its own state; the
     // underlying model is shared.
     tokio::task::spawn_blocking(move || -> Result<Vec<TextSegment>> {
-        let ctx = ensure_loaded(&shared, &model_path)?;
+        let ctx = ensure_loaded(&shared, &model_path, use_gpu)?;
         let mut state = ctx
             .create_state()
             .map_err(|e| anyhow!("create whisper state: {e}"))?;
