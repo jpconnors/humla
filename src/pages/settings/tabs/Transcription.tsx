@@ -222,8 +222,8 @@ export function TranscriptionTab({
                   style={{ fontFamily: "var(--font-mono)" }}
                 />
                 <p className="text-xs text-[var(--color-text-muted)] mt-1">
-                  Lower = more aggressive separation (more speakers).
-                  Higher = more merging. Default 0.4. Community-1 only.
+                  Higher = more aggressive separation (more speakers).
+                  Lower = more merging. Default 0.4. Community-1 only.
                 </p>
               </div>
               <div>

@@ -251,15 +251,13 @@ func runDownloadSortformer() async -> Int32 {
 
 func runDiarizeCommunity1(audioPath: String, numSpeakers: Int?, threshold: Double?) async -> Int32 {
     do {
-        // Tuning notes for in-person meetings on a shared mic:
-        //   - clusteringThreshold default 0.4 (down from community default 0.6,
-        //     and down from the 0.5 we shipped initially) so similar-sounding
-        //     voices recorded in the same room don't collapse onto one
-        //     cluster. Lower = more aggressive separation. The value was
-        //     tightened after observing the v0.8.0 build still merging
-        //     two-person conversations into a single cluster when one
-        //     speaker dominated and the other only dropped short
-        //     interjections. Caller can override via --threshold.
+        // Tuning notes:
+        //   - clusteringThreshold default 0.4 (community default is 0.6).
+        //     The threshold is the AHC/PLDA merge cutoff: HIGHER values stop
+        //     merging earlier and produce MORE clusters (more speakers);
+        //     LOWER values keep merging and produce FEWER clusters. Earlier
+        //     internal notes in this codebase had the polarity inverted —
+        //     don't trust them. Caller can override via --threshold.
         //   - excludeOverlap stays true (default): when two speakers overlap,
         //     the overlapping frames are masked out before extracting per-
         //     speaker embeddings, so the embedding stays clean.
