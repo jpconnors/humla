@@ -376,6 +376,11 @@ let engine = AVAudioEngine()
 var micConverter: AVAudioConverter?
 do {
     let input = engine.inputNode
+    // NOTE: do NOT call `input.setVoiceProcessingEnabled(true)`. It enables
+    // hardware AEC, but the voice-processing IO unit takes over the audio
+    // device for *both* directions, which ducks the system output (you
+    // can't hear the other person on a call). Echo-cancel the mic in a
+    // post-stop dedup pass instead — see commands.rs.
     let inFormat = input.inputFormat(forBus: 0)
     if inFormat.sampleRate == 0 || inFormat.channelCount == 0 {
         emitError("Microphone input format invalid (sampleRate=\(inFormat.sampleRate), channels=\(inFormat.channelCount)). Dev binaries without an Info.plist may be silently denied audio. Try running 'pnpm tauri build --debug' and launching the .app instead of 'pnpm tauri dev'.")

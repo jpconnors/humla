@@ -2158,6 +2158,117 @@ fn assign_speaker<'a>(chunk_start_ms: u64, segments: &'a [diarize::Segment]) -> 
         .map(|s| s.speaker_id.as_str())
 }
 
+/// Cross-stream echo dedup. When a meeting plays through laptop speakers,
+/// the mic re-captures the speaker output and Whisper transcribes the same
+/// words on both streams ("You: ..." + "Speaker 1: ..." with near-identical
+/// text). This pass drops mic chunks whose tokens are mostly contained in
+/// time-overlapping sys chunks. The OS-level fix
+/// (`AVAudioInputNode.setVoiceProcessingEnabled`) ducks the system output
+/// device, which is unusable for a meeting recorder — so we cancel at the
+/// transcript layer instead. See `feedback_voice_processing.md` for the
+/// long story.
+///
+/// Behaviour:
+/// - No-op when there are no sys chunks (in-person mode, mic-only).
+/// - Skips mic chunks under `MIN_MIC_TOKENS` so brief acks ("yeah", "ok")
+///   aren't dropped just because those words also appear somewhere in the
+///   sys window.
+/// - Containment coefficient (intersection / smaller set) rather than
+///   Jaccard, because a single sys chunk can be much longer than a mic
+///   chunk; Jaccard would dilute below threshold even on a perfect match.
+fn dedup_mic_against_sys(chunks: &[ChunkRecord]) -> Vec<ChunkRecord> {
+    // Time tolerance for matching mic chunks to sys chunks. Boundaries
+    // don't align (each source is VAD-bounded independently) so a sys
+    // chunk's content can sit anywhere from a few seconds before a mic
+    // chunk starts to a chunk-length after.
+    const PRE_MS: u64 = 5_000;
+    const POST_MS: u64 = 15_000;
+    // Token-overlap threshold above which a mic chunk is considered an
+    // echo of the sys text and dropped. Genuine simultaneous speech
+    // (you talking while the remote speaks) typically shares <0.3 of
+    // tokens because the words are different.
+    const SIMILARITY_THRESHOLD: f32 = 0.6;
+    // Skip dedup for mic chunks under this many tokens — brief acks
+    // ("yeah", "ok") match by chance against any windowed sys text.
+    const MIN_MIC_TOKENS: usize = 3;
+
+    let has_sys = chunks.iter().any(|c| c.source == ChunkSource::Sys);
+    if !has_sys {
+        return chunks.to_vec();
+    }
+
+    let sys_chunks: Vec<&ChunkRecord> = chunks
+        .iter()
+        .filter(|c| c.source == ChunkSource::Sys)
+        .collect();
+
+    let mut kept: Vec<ChunkRecord> = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        if chunk.source != ChunkSource::Mic {
+            kept.push(chunk.clone());
+            continue;
+        }
+        let mic_tokens = normalize_tokens(&chunk.text);
+        if mic_tokens.len() < MIN_MIC_TOKENS {
+            kept.push(chunk.clone());
+            continue;
+        }
+        let lower = chunk.start_ms.saturating_sub(PRE_MS);
+        let upper = chunk.start_ms.saturating_add(POST_MS);
+        let mut sys_window = String::new();
+        for s in &sys_chunks {
+            if s.start_ms >= lower && s.start_ms <= upper {
+                if !sys_window.is_empty() {
+                    sys_window.push(' ');
+                }
+                sys_window.push_str(&s.text);
+            }
+        }
+        if sys_window.is_empty() {
+            kept.push(chunk.clone());
+            continue;
+        }
+        let sim = token_containment(&mic_tokens, &normalize_tokens(&sys_window));
+        if sim < SIMILARITY_THRESHOLD {
+            kept.push(chunk.clone());
+        }
+        // else: this mic chunk is an echo of the sys content — drop it.
+    }
+    kept
+}
+
+/// Lowercase, split on non-alphanumeric, drop tokens shorter than 2
+/// chars. Matches the granularity Whisper emits — punctuation differs
+/// across streams ("Hello." vs "hello") and one-letter tokens are too
+/// noisy to count toward overlap.
+fn normalize_tokens(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 1)
+        .map(|w| w.to_string())
+        .collect()
+}
+
+/// Containment coefficient: |A ∩ B| / min(|A|, |B|). 1.0 when A ⊆ B
+/// (or vice versa). Better than Jaccard for this case because a sys
+/// window concatenated from multiple chunks is often much larger than
+/// a single mic chunk; Jaccard's union-in-the-denominator would
+/// suppress the score below threshold even on a perfect echo.
+fn token_containment(a: &[String], b: &[String]) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let set_a: std::collections::HashSet<&str> = a.iter().map(String::as_str).collect();
+    let set_b: std::collections::HashSet<&str> = b.iter().map(String::as_str).collect();
+    let inter = set_a.intersection(&set_b).count() as f32;
+    let smaller = set_a.len().min(set_b.len()) as f32;
+    if smaller == 0.0 {
+        0.0
+    } else {
+        inter / smaller
+    }
+}
+
 /// Rebuild the transcript by walking chunks in chronological order and
 /// emitting each one prefixed with its assigned label. Same-label runs
 /// get a single space between chunks (continuation); label changes get
@@ -2173,11 +2284,15 @@ fn assign_speaker<'a>(chunk_start_ms: u64, segments: &'a [diarize::Segment]) -> 
 /// tie-break preferring `Mic` reflects the typical UX assumption that
 /// the user speaks first; in practice the imprecision is well below
 /// the threshold a reader would notice.
+///
+/// Cross-stream echo dedup runs first via `dedup_mic_against_sys` —
+/// see that function for details.
 fn build_labelled_transcript(
     chunks: &[ChunkRecord],
     label_for_chunk: &(dyn Fn(&ChunkRecord) -> Option<String> + Send),
 ) -> String {
-    let mut sorted: Vec<&ChunkRecord> = chunks.iter().collect();
+    let kept = dedup_mic_against_sys(chunks);
+    let mut sorted: Vec<&ChunkRecord> = kept.iter().collect();
     sorted.sort_by_key(|c| {
         let source_rank = match c.source {
             ChunkSource::Mic => 0,
@@ -3344,6 +3459,113 @@ mod diarize_tests {
             combine_with_snapshot(snap, new),
             "Michael: prior\nWilma: prior\nSpeaker 1: new"
         );
+    }
+
+    #[test]
+    fn dedup_drops_mic_chunk_echoing_overlapping_sys() {
+        // The bug: speakers play remote voice, mic re-captures it, both
+        // streams transcribe the same words. The mic version must drop.
+        let chunks = vec![
+            sys(0, "we should ship the migration on Friday before the freeze"),
+            mic(200, "we should ship the migration on Friday"),
+            sys(8000, "agreed sounds good to me"),
+        ];
+        let labeller = |c: &ChunkRecord| match c.source {
+            ChunkSource::Mic => Some("You".to_string()),
+            ChunkSource::Sys => Some("Speaker 1".to_string()),
+        };
+        let out = build_labelled_transcript(&chunks, &labeller);
+        // Mic echo dropped; only the sys content remains.
+        assert_eq!(
+            out,
+            "Speaker 1: we should ship the migration on Friday before the freeze agreed sounds good to me"
+        );
+    }
+
+    #[test]
+    fn dedup_keeps_mic_chunk_with_distinct_user_speech() {
+        // User actually talking over the remote — different words, low
+        // containment, mic must survive.
+        let chunks = vec![
+            sys(0, "we should ship the migration on Friday before the freeze"),
+            mic(200, "actually I want to push back on that timeline"),
+        ];
+        let labeller = |c: &ChunkRecord| match c.source {
+            ChunkSource::Mic => Some("You".to_string()),
+            ChunkSource::Sys => Some("Speaker 1".to_string()),
+        };
+        let out = build_labelled_transcript(&chunks, &labeller);
+        assert!(out.contains("actually I want to push back"));
+        assert!(out.contains("Speaker 1: we should ship"));
+    }
+
+    #[test]
+    fn dedup_keeps_short_mic_acks_even_if_words_appear_in_sys() {
+        // "yeah" / "ok" alone shouldn't drop just because those tokens
+        // appear in any sys window; they're valid backchannels.
+        let chunks = vec![
+            sys(0, "so the ship date is yeah ok confirmed for Friday"),
+            mic(500, "yeah"),
+            mic(1000, "ok"),
+        ];
+        let labeller = |c: &ChunkRecord| match c.source {
+            ChunkSource::Mic => Some("You".to_string()),
+            ChunkSource::Sys => Some("Speaker 1".to_string()),
+        };
+        let out = build_labelled_transcript(&chunks, &labeller);
+        assert!(out.contains("You: yeah ok"));
+    }
+
+    #[test]
+    fn dedup_keeps_mic_when_sys_window_is_far_away() {
+        // Mic chunk's text matches sys text 30 seconds later — outside the
+        // overlap window, must NOT dedup. The remote echoing the user
+        // later is genuine new content.
+        let chunks = vec![
+            mic(0, "the proposal is to extend the deadline to Friday"),
+            sys(30_000, "the proposal is to extend the deadline to Friday"),
+        ];
+        let labeller = |c: &ChunkRecord| match c.source {
+            ChunkSource::Mic => Some("You".to_string()),
+            ChunkSource::Sys => Some("Speaker 1".to_string()),
+        };
+        let out = build_labelled_transcript(&chunks, &labeller);
+        assert!(out.contains("You: the proposal is to extend"));
+        assert!(out.contains("Speaker 1: the proposal is to extend"));
+    }
+
+    #[test]
+    fn dedup_noop_when_only_mic_chunks_present() {
+        // In-person mode: only mic chunks. Dedup must not touch anything.
+        let chunks = vec![
+            mic(0, "this is the first thing I am saying"),
+            mic(3000, "and now the second thing"),
+        ];
+        let labeller = |c: &ChunkRecord| match c.source {
+            ChunkSource::Mic => Some("Speaker 1".to_string()),
+            ChunkSource::Sys => Some("Speaker 2".to_string()),
+        };
+        let out = build_labelled_transcript(&chunks, &labeller);
+        assert_eq!(
+            out,
+            "Speaker 1: this is the first thing I am saying and now the second thing"
+        );
+    }
+
+    #[test]
+    fn token_containment_perfect_subset() {
+        let a: Vec<String> = ["ship", "the", "migration"].iter().map(|s| s.to_string()).collect();
+        let b: Vec<String> = ["we", "should", "ship", "the", "migration", "on", "friday"]
+            .iter().map(|s| s.to_string()).collect();
+        // a ⊆ b → containment 1.0
+        assert!((token_containment(&a, &b) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn token_containment_no_overlap() {
+        let a: Vec<String> = ["completely", "different", "words"].iter().map(|s| s.to_string()).collect();
+        let b: Vec<String> = ["nothing", "in", "common"].iter().map(|s| s.to_string()).collect();
+        assert!(token_containment(&a, &b) < 1e-6);
     }
 }
 
