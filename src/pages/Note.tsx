@@ -17,16 +17,7 @@ import { RecordingBar } from "../components/RecordingBar";
 import { SkeletonLines } from "../components/Skeleton";
 import { NoteEditor } from "../components/Editor";
 import { SUMMARY_PRESETS, presetLabelForLang } from "../lib/presets";
-
-// Mirrors the dropdown in Settings. Kept inline for now; if a third place
-// needs it we can extract to a shared module.
-const LANGS: { value: string; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "no", label: "Norsk" },
-  { value: "en", label: "English" },
-  { value: "sv", label: "Svenska" },
-  { value: "da", label: "Dansk" },
-];
+import { LANGUAGES, languageOptionLabel } from "../lib/languages";
 
 function formatDateChip(ts: number) {
   const d = new Date(ts);
@@ -539,9 +530,9 @@ function LanguagePicker({
   return (
     <>
       <select value={value} onChange={(e) => onChange(e.target.value)}>
-        {LANGS.map((l) => (
+        {LANGUAGES.map((l) => (
           <option key={l.value} value={l.value}>
-            {l.label}
+            {languageOptionLabel(l)}
           </option>
         ))}
       </select>

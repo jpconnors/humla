@@ -4,6 +4,7 @@ import { ipc, onDiarizeDownloadProgress, onLocalWhisperProgress, type DiarizeMod
 import { useThemeStore, type Theme } from "../lib/theme";
 import { Permissions } from "../components/Permissions";
 import { SUMMARY_PRESETS, presetPromptForLang, presetLabelForLang } from "../lib/presets";
+import { LANGUAGES, languageOptionLabel } from "../lib/languages";
 
 type EditableKey = Exclude<SettingsKey, "theme">;
 
@@ -50,14 +51,6 @@ const THEMES: { value: Theme; label: string }[] = [
   { value: "system", label: "System" },
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
-];
-
-const LANGS = [
-  { value: "auto", label: "Auto-detect" },
-  { value: "no", label: "Norsk" },
-  { value: "en", label: "English" },
-  { value: "sv", label: "Svenska" },
-  { value: "da", label: "Dansk" },
 ];
 
 const TRANSCRIBE_MODELS = [
@@ -382,7 +375,11 @@ export function Settings() {
             )}
           </Row>
           <Row label="Language">
-            <Select value={s.language} onChange={(v) => update("language", v)} options={LANGS} />
+            <Select
+              value={s.language}
+              onChange={(v) => update("language", v)}
+              options={LANGUAGES.map((l) => ({ value: l.value, label: languageOptionLabel(l) }))}
+            />
           </Row>
           {provider === "openai" && (
             <Row label="Model">
