@@ -38,3 +38,6 @@ src-tauri/icons/.app-icon-staged.png
 
 # Marketing drafts and routines (kept local; not under MIT license)
 marketing/
+
+# Claude Code per-project skills/settings
+.claude/
