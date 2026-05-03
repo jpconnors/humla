@@ -25,7 +25,12 @@ export function SidebarCollapsed({ onExpand }: { onExpand: () => void }) {
   const onHome = location.pathname === "/";
 
   return (
-    <div className="flex flex-col items-center gap-1 pt-12 pb-3 h-full">
+    <div className="flex flex-col items-center gap-1 pb-3 h-full">
+      {/* Title-bar-aligned drag strip so the user can grab the window
+          from this column. Tall enough to clear the macOS traffic-
+          light row. The icons render below it, never overlapping. */}
+      <div data-tauri-drag-region className="w-full h-9 shrink-0" />
+      <div className="h-3 shrink-0" />
       <IconBtn label="Open sidebar" onClick={onExpand}>
         <Menu size={18} />
       </IconBtn>

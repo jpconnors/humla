@@ -58,17 +58,15 @@ export function Layout() {
     <div className="flex h-full">
       <aside
         className={cn(
-          "shrink-0 border-r border-[var(--color-line)] transition-[width] duration-200 overflow-hidden relative",
+          "shrink-0 border-r border-[var(--color-line)] transition-[width] duration-200 overflow-hidden",
           collapsed ? "w-12" : "w-64",
         )}
       >
-        {/* Tauri drag strip aligned with the traffic-light row. Lives
-            inside the sidebar so neither layout state has to leave a
-            gap above the content. */}
-        <div
-          data-tauri-drag-region
-          className="absolute top-0 left-0 right-0 h-9 z-10"
-        />
+        {/* Each variant of the sidebar provides its own drag strip
+            below — Sidebar via its h-8 header div, SidebarCollapsed
+            via the dedicated drag area. Putting another absolute
+            drag strip here would sit on top of Sidebar's collapse
+            button and intercept clicks. */}
         {collapsed ? (
           <SidebarCollapsed onExpand={() => setManualCollapsed(false)} />
         ) : (
