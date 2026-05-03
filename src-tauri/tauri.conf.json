@@ -40,7 +40,8 @@
       "entitlements": "entitlements.plist",
       "signingIdentity": "Developer ID Application: MICHAEL MEHLUM WILHELMSEN (NBUP88JQ35)"
     },
-    "externalBin": ["binaries/audio-capture", "binaries/speaker-diarize"]
+    "externalBin": ["binaries/audio-capture", "binaries/speaker-diarize"],
+    "resources": ["resources/default.metallib"]
   },
   "plugins": {
     "updater": {

@@ -12,6 +12,11 @@ src-tauri/gen/
 # Built sidecar binaries (machine-specific, regenerable via build-sidecar.sh)
 src-tauri/binaries/
 
+# Metallib build cache marker (the .metallib itself stays tracked so
+# fresh clones don't need the Metal Toolchain ~700MB; rebuild via
+# scripts/build-metallib.sh — already chained from build-dmg.sh).
+src-tauri/resources/.metallib.stamp
+
 # Swift sidecar build artifacts
 audio-capture/.build/
 audio-capture/Package.resolved

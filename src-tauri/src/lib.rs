@@ -31,6 +31,26 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            // Point GGML at our prebuilt default.metallib BEFORE any
+            // whisper.cpp init runs. whisper-rs 0.13 ships a vendored
+            // ggml whose runtime Metal-source compile path silently
+            // breaks on some macOS setups (whisper.cpp#3009 — sed-
+            // based ggml-common.h embed misfires under cmake), causing
+            // shader compile to fail with `undeclared identifier
+            // 'block_q5_1'` and falling back to BLAS (CPU). With
+            // GGML_METAL_PATH_RESOURCES set to a directory containing
+            // a precompiled `default.metallib`, GGML's loader uses
+            // that instead and skips the broken source path entirely
+            // — restoring full Metal GPU acceleration.
+            //
+            // The metallib itself is built by scripts/build-metallib.sh
+            // (chained from beforeBuildCommand) and bundled via
+            // `bundle.resources` in tauri.conf.json. resource_dir()
+            // returns the right path in both dev and release builds.
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                std::env::set_var("GGML_METAL_PATH_RESOURCES", &resource_dir);
+            }
+
             let app_dir = app
                 .path()
                 .app_data_dir()

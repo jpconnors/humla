@@ -34,6 +34,7 @@ else
 fi
 
 ./scripts/build-sidecar.sh
+./scripts/build-metallib.sh
 
 pnpm tauri build
 
