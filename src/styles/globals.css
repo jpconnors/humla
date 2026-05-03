@@ -383,7 +383,6 @@ select {
 }
 .nd-word-active {
   color: var(--color-text);
-  font-weight: 500;
   background: color-mix(in srgb, var(--color-text) 12%, transparent);
 }
 
