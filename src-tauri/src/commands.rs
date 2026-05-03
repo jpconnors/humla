@@ -1,5 +1,6 @@
 use crate::db::{self, Note, NotePatch};
 use crate::diarize;
+use crate::languages;
 use crate::openai;
 use crate::local_whisper;
 use crate::presets;
@@ -1817,13 +1818,21 @@ fn html_to_text(html: &str) -> String {
 
 // Hard directive appended to the summary system prompt. Enforces output
 // language regardless of which language the user wrote their prompt in.
-fn language_directive(lang: &str) -> &'static str {
+fn language_directive(lang: &str) -> String {
+    // Native imperatives for the common Nordic codes — the model picks up
+    // the target language faster from a directive written in that language
+    // than from "Write in Norwegian." in English. Everything else falls back
+    // to a generated "IMPORTANT: Write the entire response in {Name}." using
+    // the English language name from the shared lookup.
     match lang {
-        "no" => "VIKTIG: Skriv hele svaret på norsk.",
-        "sv" => "VIKTIGT: Skriv hela svaret på svenska.",
-        "da" => "VIGTIGT: Skriv hele svaret på dansk.",
-        "auto" => "Respond in the same language as the user's notes.",
-        _ => "IMPORTANT: Write the entire response in English.",
+        "no" => "VIKTIG: Skriv hele svaret på norsk.".to_string(),
+        "sv" => "VIKTIGT: Skriv hela svaret på svenska.".to_string(),
+        "da" => "VIGTIGT: Skriv hele svaret på dansk.".to_string(),
+        "auto" => "Respond in the same language as the user's notes.".to_string(),
+        other => format!(
+            "IMPORTANT: Write the entire response in {}.",
+            languages::english_name(other)
+        ),
     }
 }
 

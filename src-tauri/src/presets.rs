@@ -4,16 +4,17 @@
 //
 // Keep these in sync with src/pages/Settings.tsx::SUMMARY_PRESETS.
 
+use crate::languages;
+
 pub fn prompt(preset: &str, lang: &str) -> String {
     let entry = ALL.iter().find(|p| p.value == preset).unwrap_or(&ALL[0]);
     if lang == "no" {
         entry.no.to_string()
     } else {
-        let label = match lang {
-            "sv" => "Swedish",
-            "da" => "Danish",
-            "auto" => "the same language as the input",
-            _ => "English",
+        let label = if lang == "auto" {
+            "the same language as the input"
+        } else {
+            languages::english_name(lang)
         };
         entry.en.replace("{LANGUAGE}", label)
     }
