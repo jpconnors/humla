@@ -1119,6 +1119,24 @@ function TranscriptPlayer({
     return idx;
   }, [timeline, currentMs]);
 
+  // Active word inside the active chunk. Chunks generally have <30
+  // words, so a linear scan per timeupdate (~4 fires/sec) is fine —
+  // no need for a flat global index. Returns -1 when no chunk is
+  // active or the active chunk has no word data (OpenAI provider /
+  // older recording), so the renderer falls back to chunk-level
+  // highlight in those cases.
+  const activeWordIdx = useMemo(() => {
+    if (activeIdx < 0) return -1;
+    const words = timeline[activeIdx]?.words;
+    if (!words || words.length === 0) return -1;
+    let idx = -1;
+    for (let i = 0; i < words.length; i++) {
+      if (words[i].start_ms <= currentMs) idx = i;
+      else break;
+    }
+    return idx;
+  }, [activeIdx, timeline, currentMs]);
+
   useEffect(() => {
     if (activeIdx < 0 || !containerRef.current) return;
     const el = containerRef.current.querySelector(`[data-idx="${activeIdx}"]`);
@@ -1259,14 +1277,47 @@ function TranscriptPlayer({
                     {entry.label}
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => seek(entry.start_ms)}
-                  title="Click to play from here"
-                  className="text-left flex-1 nd-bare cursor-text"
-                >
-                  {entry.text}
-                </button>
+                {entry.words && entry.words.length > 0 ? (
+                  <div className="flex-1 nd-bare cursor-text leading-relaxed">
+                    {entry.words.map((w, wi) => {
+                      const wordActive = isActive && wi === activeWordIdx;
+                      return (
+                        <span
+                          key={wi}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            seek(w.start_ms);
+                          }}
+                          className={
+                            "cursor-pointer transition-colors rounded px-0.5 " +
+                            (wordActive
+                              ? "bg-[var(--color-text)] text-[var(--color-canvas)]"
+                              : "hover:bg-[var(--color-pill-hover)]")
+                          }
+                        >
+                          {w.text}
+                        </span>
+                      );
+                    }).reduce<React.ReactNode[]>((acc, node, i) => {
+                      // Flatten with explicit space text nodes so words
+                      // render with consistent spacing regardless of
+                      // browser text-rendering quirks. Skip the leading
+                      // space before the first word.
+                      if (i > 0) acc.push(" ");
+                      acc.push(node);
+                      return acc;
+                    }, [])}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => seek(entry.start_ms)}
+                    title="Click to play from here"
+                    className="text-left flex-1 nd-bare cursor-text"
+                  >
+                    {entry.text}
+                  </button>
+                )}
               </div>
             );
           })}
