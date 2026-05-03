@@ -84,6 +84,17 @@ export function presetLabelForLang(preset: PresetSpec, lang: string): string {
   return lang === "no" ? preset.label_no : preset.label_en;
 }
 
+// UI-facing label. Always English because the app chrome itself isn't
+// localised — the preset's *prompt* still adapts to the recording's
+// language, but the dropdown/chip text stays consistent so a user
+// switching between Norwegian and English notes doesn't see their
+// preset names rename mid-app. Use this in any user-facing surface;
+// keep `presetLabelForLang` only for places that explicitly want the
+// localised form (none in current code).
+export function presetLabel(preset: PresetSpec): string {
+  return preset.label_en;
+}
+
 export function presetByValue(value: string): PresetSpec | undefined {
   return SUMMARY_PRESETS.find((p) => p.value === value);
 }

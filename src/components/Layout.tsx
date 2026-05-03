@@ -8,13 +8,50 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { bindBackendListeners } from "../lib/store";
 import { cn } from "../lib/cn";
 
+// Below this width (px) the main app sidebar + Settings inner sidebar +
+// content all fight for room and the right-hand column starts wrapping
+// inside its rows. Auto-collapsing at this threshold keeps the UI from
+// going claustrophobic. Keep in sync with the equivalent threshold in
+// any future responsive Settings logic.
+const NARROW_VIEWPORT_PX = 900;
+
 export function Layout() {
-  const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
+  // null means "no manual override — follow the auto-collapse rule".
+  // A boolean means the user clicked the toggle and we honour it until
+  // the route or viewport situation changes again.
+  const [manualCollapsed, setManualCollapsed] = useState<boolean | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(
+    typeof window !== "undefined" ? window.innerWidth : 1200,
+  );
 
   useEffect(() => {
     bindBackendListeners();
   }, []);
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Auto-collapse when we're on Settings (the page already has its own
+  // navigation chrome — the main sidebar adds clutter without value) or
+  // when the window is too narrow to fit both sidebars + content.
+  const onSettings = location.pathname.startsWith("/settings");
+  const tooNarrow = viewportWidth < NARROW_VIEWPORT_PX;
+  const shouldAutoCollapse = onSettings || tooNarrow;
+
+  // Drop any manual override when the auto trigger flips. If the user
+  // navigates away from Settings to a Note in a wide window, we restart
+  // from auto = expanded; they can collapse again with the toggle if they
+  // want. Same the other way around — entering Settings collapses,
+  // overriding any prior manual choice.
+  useEffect(() => {
+    setManualCollapsed(null);
+  }, [shouldAutoCollapse]);
+
+  const collapsed = manualCollapsed !== null ? manualCollapsed : shouldAutoCollapse;
 
   return (
     <div className="flex h-full">
@@ -24,7 +61,7 @@ export function Layout() {
           collapsed ? "w-0" : "w-64"
         )}
       >
-        <Sidebar onCollapse={() => setCollapsed(true)} />
+        <Sidebar onCollapse={() => setManualCollapsed(true)} />
       </aside>
       <main className="flex-1 min-w-0 relative">
         {/* Window drag strip — Tauri 2's native attribute, not the CSS region.
@@ -37,7 +74,7 @@ export function Layout() {
         />
         {collapsed && (
           <button
-            onClick={() => setCollapsed(false)}
+            onClick={() => setManualCollapsed(false)}
             className="no-drag absolute top-3 left-3 z-30 px-2 py-1 rounded-md hover:bg-[var(--color-pill-hover)] text-[var(--color-text-muted)]"
             aria-label="Open sidebar"
           >

@@ -16,7 +16,7 @@ import { useNotesStore, useRecordingStore } from "../lib/store";
 import { RecordingBar } from "../components/RecordingBar";
 import { SkeletonLines } from "../components/Skeleton";
 import { NoteEditor } from "../components/Editor";
-import { SUMMARY_PRESETS, presetLabelForLang } from "../lib/presets";
+import { SUMMARY_PRESETS, presetLabel } from "../lib/presets";
 import { LANGUAGES, languageOptionLabel } from "../lib/languages";
 
 function formatDateChip(ts: number) {
@@ -265,7 +265,6 @@ export function Note() {
           <PropertyRow icon={<FileText size={14} />} label="preset">
             <PresetPicker
               value={draft.summary_preset || "meeting"}
-              lang={uiLang}
               onChange={(v) => patch("summary_preset", v)}
             />
           </PropertyRow>
@@ -498,11 +497,9 @@ function FolderPicker({
 
 function PresetPicker({
   value,
-  lang,
   onChange,
 }: {
   value: string;
-  lang: string;
   onChange: (v: string) => void;
 }) {
   return (
@@ -510,10 +507,10 @@ function PresetPicker({
       <select value={value} onChange={(e) => onChange(e.target.value)}>
         {SUMMARY_PRESETS.map((p) => (
           <option key={p.value} value={p.value}>
-            {presetLabelForLang(p, lang)}
+            {presetLabel(p)}
           </option>
         ))}
-        <option value="custom">{lang === "no" ? "Egendefinert" : "Custom"}</option>
+        <option value="custom">Custom</option>
       </select>
       <span aria-hidden className="nd-prop-caret">▾</span>
     </>

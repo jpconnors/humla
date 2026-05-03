@@ -1,5 +1,5 @@
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { SUMMARY_PRESETS, presetPromptForLang, presetLabelForLang } from "../../../lib/presets";
+import { SUMMARY_PRESETS, presetPromptForLang, presetLabel } from "../../../lib/presets";
 import { Btn } from "../components/Btn";
 import { Row, Section } from "../components/Section";
 import { Select } from "../components/Select";
@@ -155,7 +155,7 @@ export function SummaryTab({
             >
               {SUMMARY_PRESETS.map((p) => (
                 <option key={p.value} value={p.value}>
-                  {presetLabelForLang(p, s.language)}
+                  {presetLabel(p)}
                 </option>
               ))}
               <option value="custom" disabled>

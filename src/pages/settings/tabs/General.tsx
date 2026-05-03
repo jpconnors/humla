@@ -1,7 +1,7 @@
 import { useThemeStore } from "../../../lib/theme";
 import { Permissions } from "../../../components/Permissions";
 import { LANGUAGES, languageOptionLabel } from "../../../lib/languages";
-import { SUMMARY_PRESETS, presetLabelForLang } from "../../../lib/presets";
+import { SUMMARY_PRESETS, presetLabel } from "../../../lib/presets";
 import { Row, Section } from "../components/Section";
 import { Select } from "../components/Select";
 import { THEMES } from "../types";
@@ -13,6 +13,10 @@ export function GeneralTab({ s, update }: Pick<SettingsHook, "s" | "update">) {
 
   return (
     <>
+      <Section title="Permissions">
+        <Permissions />
+      </Section>
+
       <Section title="Defaults">
         <Row label="Language">
           <Select
@@ -31,7 +35,7 @@ export function GeneralTab({ s, update }: Pick<SettingsHook, "s" | "update">) {
             onChange={(v) => update("default_summary_preset", v)}
             options={SUMMARY_PRESETS.map((p) => ({
               value: p.value,
-              label: presetLabelForLang(p, s.language),
+              label: presetLabel(p),
             }))}
           />
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
@@ -61,10 +65,6 @@ export function GeneralTab({ s, update }: Pick<SettingsHook, "s" | "update">) {
             ))}
           </div>
         </Row>
-      </Section>
-
-      <Section title="Permissions">
-        <Permissions />
       </Section>
     </>
   );
