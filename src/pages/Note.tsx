@@ -1174,6 +1174,13 @@ function TranscriptPlayer({
           {timeline.map((entry, i) => {
             const isActive = i === activeIdx;
             const color = entry.label ? colors.get(entry.label) : undefined;
+            // Show the speaker pill only when the label changes from
+            // the previous chunk. Per-chunk timeline entries mean a
+            // single speaker turn can span many rows, and repeating
+            // the pill on every row reads as visual noise. The first
+            // row always gets a pill.
+            const prevLabel = i > 0 ? timeline[i - 1].label : null;
+            const showPill = !!entry.label && !!color && entry.label !== prevLabel;
             return (
               <button
                 type="button"
@@ -1188,7 +1195,7 @@ function TranscriptPlayer({
                     : "hover:bg-[var(--color-pill-hover)]")
                 }
               >
-                {entry.label && color && (
+                {showPill && (
                   <span
                     className="nd-speaker-pill mr-2"
                     style={{ background: color }}

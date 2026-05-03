@@ -2494,11 +2494,14 @@ async fn build_playback_wav(
     Ok(())
 }
 
-/// Serialise the chunk log as a per-turn JSONL. Mirrors how
-/// `build_labelled_transcript` groups chunks: same-label runs collapse
-/// into one entry whose `start_ms` is the first chunk's start. Runs
-/// dedup first so an echoed mic chunk doesn't generate a phantom turn
-/// that would never align with audio.
+/// Serialise the chunk log as a per-chunk JSONL — one entry per
+/// utterance, not per speaker turn. The saved transcript still groups
+/// same-label runs (for summary readability), but the playback view
+/// wants finer granularity: each ~5–15 s VAD chunk is the natural
+/// click-to-seek and highlight unit, so glueing them by label hides
+/// internal sentence boundaries from the player and makes the active-
+/// turn highlight feel sluggish on long monologues. Runs dedup first
+/// so echoed mic chunks don't generate phantom entries.
 fn serialize_timeline(
     chunks: &[ChunkRecord],
     label_for: &dyn Fn(&ChunkRecord) -> Option<String>,
@@ -2513,38 +2516,17 @@ fn serialize_timeline(
         (c.start_ms, source_rank)
     });
 
-    struct Turn {
-        start_ms: u64,
-        label: String,
-        text: String,
-    }
-    let mut turns: Vec<Turn> = Vec::new();
-
+    let mut out = String::new();
     for chunk in &sorted {
         let trimmed = chunk.text.trim();
         if trimmed.is_empty() {
             continue;
         }
         let label = label_for(chunk).unwrap_or_default();
-        match turns.last_mut() {
-            Some(t) if t.label == label => {
-                t.text.push(' ');
-                t.text.push_str(trimmed);
-            }
-            _ => turns.push(Turn {
-                start_ms: chunk.start_ms,
-                label,
-                text: trimmed.to_string(),
-            }),
-        }
-    }
-
-    let mut out = String::new();
-    for t in &turns {
         let entry = serde_json::json!({
-            "start_ms": t.start_ms,
-            "label": t.label,
-            "text": t.text,
+            "start_ms": chunk.start_ms,
+            "label": label,
+            "text": trimmed,
         });
         out.push_str(&entry.to_string());
         out.push('\n');
