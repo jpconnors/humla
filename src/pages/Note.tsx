@@ -1095,47 +1095,28 @@ function TranscriptPlayer({
   disabled: boolean;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [currentMs, setCurrentMs] = useState(0);
+  // activeIdx and activeWordIdx are the *only* state derived from
+  // playback position. We deliberately do NOT store currentMs in
+  // state: the rAF tick polls audio.currentTime and only calls
+  // setState when one of these two indices actually changes. This
+  // bounds re-render frequency to "transitions per second" (~5–10
+  // Hz on normal speech) instead of the rAF tick rate (60 Hz), so
+  // hundreds of word DOM nodes don't get re-walked every frame.
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const [activeWordIdx, setActiveWordIdx] = useState(-1);
   const [editing, setEditing] = useState(false);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Held in a ref so the rAF tick can read the latest timeline
+  // without restarting. Updated on every timeline change.
+  const timelineRef = useRef(timeline);
+  timelineRef.current = timeline;
 
   const labels = useMemo(
     () => Array.from(new Set(timeline.map((t) => t.label).filter(Boolean))),
     [timeline],
   );
   const colors = useMemo(() => speakerColorMap(labels), [labels]);
-
-  // The active turn is the latest one whose start_ms is ≤ currentMs.
-  // Timeline is sorted ascending by start_ms by construction (backend
-  // sorts before serialising), so a linear scan is fine — meetings
-  // rarely have more than a few hundred turns.
-  const activeIdx = useMemo(() => {
-    let idx = -1;
-    for (let i = 0; i < timeline.length; i++) {
-      if (timeline[i].start_ms <= currentMs) idx = i;
-      else break;
-    }
-    return idx;
-  }, [timeline, currentMs]);
-
-  // Active word inside the active chunk. Chunks generally have <30
-  // words, so a linear scan per timeupdate (~4 fires/sec) is fine —
-  // no need for a flat global index. Returns -1 when no chunk is
-  // active or the active chunk has no word data (OpenAI provider /
-  // older recording), so the renderer falls back to chunk-level
-  // highlight in those cases.
-  const activeWordIdx = useMemo(() => {
-    if (activeIdx < 0) return -1;
-    const words = timeline[activeIdx]?.words;
-    if (!words || words.length === 0) return -1;
-    let idx = -1;
-    for (let i = 0; i < words.length; i++) {
-      if (words[i].start_ms <= currentMs) idx = i;
-      else break;
-    }
-    return idx;
-  }, [activeIdx, timeline, currentMs]);
 
   useEffect(() => {
     if (activeIdx < 0 || !containerRef.current) return;
@@ -1149,22 +1130,55 @@ function TranscriptPlayer({
     }
   }, [activeIdx]);
 
-  // Drive currentMs from requestAnimationFrame instead of audio's
-  // `timeupdate` event. `timeupdate` fires only ~4 Hz on most
-  // browsers, which is too coarse for word-level highlighting (words
-  // often switch every 200–400 ms). rAF runs at ~60 fps when the
-  // tab is active, idles when paused / hidden, and gives snap-on-
-  // exact-boundary transitions. Stops as soon as audio pauses so we
-  // don't burn cycles on a static UI.
+  // rAF-driven active-position tracker. The previous version called
+  // setCurrentMs on every tick (60 Hz) and derived active indices via
+  // useMemo, which forced React to walk every word DOM node 60 times
+  // per second. On rapid user clicks the render queue + style recalc
+  // would compound past what the compositor could drain — visible as
+  // the audio player's native controls failing to repaint and the
+  // whole window stalling. Now: compute active chunk + active word
+  // directly inside the tick, only call setState when one of them
+  // crosses a boundary. Steady-state re-renders drop from ~60/s to a
+  // handful per second.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     let raf = 0;
     let stopped = false;
-    const sync = () => setCurrentMs(Math.floor(audio.currentTime * 1000));
+    let lastChunkIdx = -1;
+    let lastWordIdx = -1;
+
+    const computeAndSync = () => {
+      const tl = timelineRef.current;
+      const ms = audio.currentTime * 1000;
+      let chunkIdx = -1;
+      for (let i = 0; i < tl.length; i++) {
+        if (tl[i].start_ms <= ms) chunkIdx = i;
+        else break;
+      }
+      let wordIdx = -1;
+      if (chunkIdx >= 0) {
+        const words = tl[chunkIdx].words;
+        if (words && words.length > 0) {
+          for (let i = 0; i < words.length; i++) {
+            if (words[i].start_ms <= ms) wordIdx = i;
+            else break;
+          }
+        }
+      }
+      if (chunkIdx !== lastChunkIdx) {
+        lastChunkIdx = chunkIdx;
+        setActiveIdx(chunkIdx);
+      }
+      if (wordIdx !== lastWordIdx) {
+        lastWordIdx = wordIdx;
+        setActiveWordIdx(wordIdx);
+      }
+    };
+
     const tick = () => {
       if (stopped) return;
-      sync();
+      computeAndSync();
       raf = requestAnimationFrame(tick);
     };
     const start = () => {
@@ -1174,15 +1188,14 @@ function TranscriptPlayer({
     const stop = () => {
       cancelAnimationFrame(raf);
       raf = 0;
-      // One last sync after the audio settles, so a paused-mid-word
-      // state shows the right active word.
-      sync();
+      computeAndSync();
     };
     audio.addEventListener("play", start);
     audio.addEventListener("playing", start);
     audio.addEventListener("pause", stop);
     audio.addEventListener("ended", stop);
-    audio.addEventListener("seeked", sync);
+    audio.addEventListener("seeked", computeAndSync);
+    computeAndSync();
     if (!audio.paused) start();
     return () => {
       stopped = true;
@@ -1191,7 +1204,7 @@ function TranscriptPlayer({
       audio.removeEventListener("playing", start);
       audio.removeEventListener("pause", stop);
       audio.removeEventListener("ended", stop);
-      audio.removeEventListener("seeked", sync);
+      audio.removeEventListener("seeked", computeAndSync);
     };
   }, []);
 
