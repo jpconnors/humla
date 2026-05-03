@@ -152,6 +152,8 @@ export const ipc = {
     invoke<string | null>("note_playback_path", { noteId }),
   noteTimeline: (noteId: string) =>
     invoke<TimelineEntry[]>("note_timeline", { noteId }),
+  noteTimelineRename: (noteId: string, oldLabel: string, newLabel: string) =>
+    invoke<void>("note_timeline_rename", { noteId, oldLabel, newLabel }),
   openInFinder: (path: string) => invoke<void>("open_in_finder", { path }),
   rediarizeNote: (noteId: string) => invoke<void>("rediarize_note", { noteId }),
 

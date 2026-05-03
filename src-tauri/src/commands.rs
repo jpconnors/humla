@@ -537,6 +537,57 @@ pub fn note_timeline(app: AppHandle, note_id: String) -> Result<Vec<TimelineEntr
     Ok(out)
 }
 
+/// Rewrite every timeline entry whose label exactly matches `old_label`
+/// to use `new_label` instead. Mirrors the regex line-anchored rename
+/// the frontend already does on `note.transcript`, so the player view's
+/// chunk highlights stay in sync with the saved transcript when the
+/// user renames a speaker via the chip strip. Best-effort: returns
+/// silently when no timeline.jsonl exists (older notes), and skips
+/// malformed lines instead of failing the whole rewrite.
+#[tauri::command]
+pub fn note_timeline_rename(
+    app: AppHandle,
+    note_id: String,
+    old_label: String,
+    new_label: String,
+) -> Result<(), String> {
+    if old_label == new_label {
+        return Ok(());
+    }
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(err)?
+        .join("recordings")
+        .join(&note_id)
+        .join("timeline.jsonl");
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("read timeline: {e}"))?;
+    let mut out = String::with_capacity(content.len());
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => {
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+        };
+        if v.get("label").and_then(|s| s.as_str()) == Some(old_label.as_str()) {
+            v["label"] = serde_json::Value::String(new_label.clone());
+        }
+        out.push_str(&v.to_string());
+        out.push('\n');
+    }
+    std::fs::write(&path, out).map_err(|e| format!("write timeline: {e}"))?;
+    Ok(())
+}
+
 /// Lists which diagnostic dumps exist for a note (e.g. ["community1-mic.json",
 /// "sortformer-sys.json"]). Empty vec when no diarize has run yet.
 #[tauri::command]
@@ -2323,57 +2374,6 @@ fn dedup_mic_against_sys(chunks: &[ChunkRecord]) -> Vec<ChunkRecord> {
         .filter(|c| c.source == ChunkSource::Sys)
         .collect();
 
-    // Safety brake: if dedup would drop nearly every mic chunk, the
-    // setup violates our assumption (mic = user's voice, sys = remote
-    // side). Common shapes: virtual loopback routing mic → sys,
-    // recording yourself listening to a podcast on speakers loud
-    // enough that the mic doubles as a sys mic, or any other case
-    // where the two streams carry the same source. In those cases
-    // dropping mic throws away the user's voice and labels their
-    // monologue with the diarizer's split of an audio signal that
-    // happens to look like 2 speakers. Better to leave both streams
-    // alone and accept duplicate-turn rendering than to silently drop
-    // the user's voice.
-    const SKIP_DEDUP_DROP_RATIO: f32 = 0.75;
-    let mic_count = chunks.iter().filter(|c| c.source == ChunkSource::Mic).count();
-    let mut would_drop = 0usize;
-    if mic_count >= 4 {
-        for chunk in chunks.iter().filter(|c| c.source == ChunkSource::Mic) {
-            let mic_tokens = normalize_tokens(&chunk.text);
-            if mic_tokens.len() < MIN_MIC_TOKENS {
-                continue;
-            }
-            let lower = chunk.start_ms.saturating_sub(PRE_MS);
-            let upper = chunk.start_ms.saturating_add(POST_MS);
-            let mut sys_window = String::new();
-            for s in &sys_chunks {
-                if s.start_ms >= lower && s.start_ms <= upper {
-                    if !sys_window.is_empty() {
-                        sys_window.push(' ');
-                    }
-                    sys_window.push_str(&s.text);
-                }
-            }
-            if sys_window.is_empty() {
-                continue;
-            }
-            let sim = token_containment(&mic_tokens, &normalize_tokens(&sys_window));
-            if sim >= SIMILARITY_THRESHOLD {
-                would_drop += 1;
-            }
-        }
-        let drop_ratio = would_drop as f32 / mic_count as f32;
-        if drop_ratio >= SKIP_DEDUP_DROP_RATIO {
-            eprintln!(
-                "dedup: would drop {}/{} mic chunks ({:.0}%) — skipping dedup; mic and sys streams appear to carry the same source",
-                would_drop,
-                mic_count,
-                drop_ratio * 100.0,
-            );
-            return chunks.to_vec();
-        }
-    }
-
     let mut kept: Vec<ChunkRecord> = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         if chunk.source != ChunkSource::Mic {
@@ -3820,13 +3820,12 @@ mod diarize_tests {
     }
 
     #[test]
-    fn dedup_skips_when_almost_all_mic_chunks_would_drop() {
-        // The user-reported case: mic and sys streams carry the same source
-        // (loopback / podcast-on-speakers / etc), text is near-identical
-        // across both. Dedup must NOT silently drop every mic chunk —
-        // that throws away the user's voice and labels their monologue
-        // with whatever sortformer found in the sys stream. Safety
-        // brake at 75% drop ratio keeps both streams intact instead.
+    fn dedup_drops_all_mic_when_sys_mirrors_them() {
+        // The intended remote-meeting / podcast-through-speakers case:
+        // mic and sys carry near-identical text because the speakers
+        // are leaking system audio into the mic. Dedup must drop every
+        // mic chunk so the user doesn't see "You: foo / Speaker 1: foo"
+        // duplicate-turn pairs in the rendered transcript.
         let chunks = vec![
             mic(0, "this is the first thing I am saying about politics"),
             sys(20, "this is the first thing I am saying about politics"),
@@ -3842,9 +3841,9 @@ mod diarize_tests {
             ChunkSource::Sys => Some("Speaker 1".to_string()),
         };
         let out = build_labelled_transcript(&chunks, &labeller);
-        // All mic chunks survive — "You" must appear.
-        assert!(out.contains("You: this is the first thing"));
-        assert!(out.contains("You: and now the second thing"));
+        // No "You:" turns survive — only the sys content is shown.
+        assert!(!out.contains("You:"));
+        assert!(out.contains("Speaker 1: this is the first thing"));
     }
 
     #[test]

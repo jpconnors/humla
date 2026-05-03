@@ -99,6 +99,7 @@ pub fn run() {
             commands::note_diagnostics_files,
             commands::note_playback_path,
             commands::note_timeline,
+            commands::note_timeline_rename,
             commands::open_in_finder,
             commands::rediarize_note,
             commands::summary_prompts_list,

@@ -446,9 +446,27 @@ export function Note() {
               <>
                 <SpeakerLabels
                   transcript={draft.transcript}
-                  onRename={(oldLabel, newLabel) =>
-                    patch("transcript", renameSpeakerInTranscript(draft.transcript, oldLabel, newLabel))
-                  }
+                  onRename={(oldLabel, newLabel) => {
+                    patch(
+                      "transcript",
+                      renameSpeakerInTranscript(draft.transcript, oldLabel, newLabel),
+                    );
+                    // Mirror the rename into the timeline so the
+                    // playback view's chunk highlights pick up the new
+                    // label without a re-diarize. Local state update
+                    // gives an instant repaint; the backend rewrite
+                    // persists the change so it survives reload.
+                    setTimeline((tl) =>
+                      tl.map((e) =>
+                        e.label === oldLabel ? { ...e, label: newLabel } : e,
+                      ),
+                    );
+                    ipc
+                      .noteTimelineRename(draft.id, oldLabel, newLabel)
+                      .catch((err) =>
+                        console.error("noteTimelineRename failed", err),
+                      );
+                  }}
                 />
                 {devMode && <DiagnosticsLinks noteId={draft.id} />}
                 {playbackUrl && timeline.length > 0 ? (
