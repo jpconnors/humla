@@ -122,7 +122,7 @@ pub fn now_ms() -> i64 {
 const NOTE_COLS: &str = "id, title, body, transcript, summary, audio_path, summary_preset, folder_id, language, summary_provider, expected_speakers, created_at, updated_at";
 
 pub fn list_notes(conn: &Connection) -> Result<Vec<Note>> {
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT {NOTE_COLS} FROM notes ORDER BY updated_at DESC"
     ))?;
     let rows = stmt
@@ -132,11 +132,10 @@ pub fn list_notes(conn: &Connection) -> Result<Vec<Note>> {
 }
 
 pub fn get_note(conn: &Connection, id: &str) -> Result<Note> {
-    let n = conn.query_row(
-        &format!("SELECT {NOTE_COLS} FROM notes WHERE id = ?1"),
-        params![id],
-        map_note,
-    )?;
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {NOTE_COLS} FROM notes WHERE id = ?1"
+    ))?;
+    let n = stmt.query_row(params![id], map_note)?;
     Ok(n)
 }
 
@@ -165,7 +164,7 @@ pub fn move_note(conn: &Connection, id: &str, folder_id: Option<&str>) -> Result
 }
 
 pub fn list_folders(conn: &Connection) -> Result<Vec<Folder>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT id, name, created_at, updated_at FROM folders ORDER BY name COLLATE NOCASE",
     )?;
     let rows = stmt
@@ -288,20 +287,21 @@ pub fn update_note(conn: &Connection, id: &str, patch: &NotePatch) -> Result<()>
 /// " " for same-speaker continuation, "\n" for a speaker switch, "" when
 /// the existing transcript is empty.
 pub fn append_transcript(conn: &Connection, id: &str, text: &str, separator: &str) -> Result<String> {
-    let mut current: String = conn.query_row(
-        "SELECT transcript FROM notes WHERE id = ?1",
-        params![id],
-        |row| row.get(0),
-    )?;
+    // Hot path — called once per chunk during recording. Cache both the
+    // read and the write to avoid re-parsing the SQL each time.
+    let mut current: String = {
+        let mut stmt = conn.prepare_cached("SELECT transcript FROM notes WHERE id = ?1")?;
+        stmt.query_row(params![id], |row| row.get(0))?
+    };
     if !current.is_empty() {
         current.push_str(separator);
     }
     current.push_str(text);
     let now = now_ms();
-    conn.execute(
+    let mut stmt = conn.prepare_cached(
         "UPDATE notes SET transcript = ?1, updated_at = ?2 WHERE id = ?3",
-        params![current, now, id],
     )?;
+    stmt.execute(params![current, now, id])?;
     Ok(current)
 }
 
@@ -311,10 +311,12 @@ pub fn append_transcript(conn: &Connection, id: &str, text: &str, separator: &st
 /// the polish step which regenerates the whole transcript at once.
 pub fn set_transcript(conn: &Connection, id: &str, text: &str) -> Result<()> {
     let now = now_ms();
-    conn.execute(
+    // Same SQL string as the transcript branch of update_note and the
+    // tail of append_transcript — they share a single cached statement.
+    let mut stmt = conn.prepare_cached(
         "UPDATE notes SET transcript = ?1, updated_at = ?2 WHERE id = ?3",
-        params![text, now, id],
     )?;
+    stmt.execute(params![text, now, id])?;
     Ok(())
 }
 
@@ -324,11 +326,11 @@ pub fn delete_note(conn: &Connection, id: &str) -> Result<()> {
 }
 
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
-    let v: rusqlite::Result<String> = conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        params![key],
-        |row| row.get(0),
-    );
+    // Hot path — called ~7 times per chunk inside transcribe_chunk's cfg
+    // block. prepare_cached reuses the same prepared statement instead of
+    // re-parsing the SQL on every call.
+    let mut stmt = conn.prepare_cached("SELECT value FROM settings WHERE key = ?1")?;
+    let v: rusqlite::Result<String> = stmt.query_row(params![key], |row| row.get(0));
     match v {
         Ok(s) => Ok(Some(s)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -337,11 +339,11 @@ pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
 }
 
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
-    conn.execute(
+    let mut stmt = conn.prepare_cached(
         "INSERT INTO settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![key, value],
     )?;
+    stmt.execute(params![key, value])?;
     Ok(())
 }
 
@@ -355,7 +357,7 @@ pub struct SummaryPrompt {
 }
 
 pub fn list_summary_prompts(conn: &Connection) -> Result<Vec<SummaryPrompt>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT id, name, content, created_at, updated_at FROM summary_prompts
          ORDER BY name COLLATE NOCASE",
     )?;
@@ -366,11 +368,10 @@ pub fn list_summary_prompts(conn: &Connection) -> Result<Vec<SummaryPrompt>> {
 }
 
 pub fn get_summary_prompt(conn: &Connection, id: &str) -> Result<SummaryPrompt> {
-    let p = conn.query_row(
+    let mut stmt = conn.prepare_cached(
         "SELECT id, name, content, created_at, updated_at FROM summary_prompts WHERE id = ?1",
-        params![id],
-        map_summary_prompt,
     )?;
+    let p = stmt.query_row(params![id], map_summary_prompt)?;
     Ok(p)
 }
 
