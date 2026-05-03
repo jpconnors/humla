@@ -1145,6 +1145,52 @@ function TranscriptPlayer({
     }
   }, [activeIdx]);
 
+  // Drive currentMs from requestAnimationFrame instead of audio's
+  // `timeupdate` event. `timeupdate` fires only ~4 Hz on most
+  // browsers, which is too coarse for word-level highlighting (words
+  // often switch every 200–400 ms). rAF runs at ~60 fps when the
+  // tab is active, idles when paused / hidden, and gives snap-on-
+  // exact-boundary transitions. Stops as soon as audio pauses so we
+  // don't burn cycles on a static UI.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    let raf = 0;
+    let stopped = false;
+    const sync = () => setCurrentMs(Math.floor(audio.currentTime * 1000));
+    const tick = () => {
+      if (stopped) return;
+      sync();
+      raf = requestAnimationFrame(tick);
+    };
+    const start = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(tick);
+    };
+    const stop = () => {
+      cancelAnimationFrame(raf);
+      raf = 0;
+      // One last sync after the audio settles, so a paused-mid-word
+      // state shows the right active word.
+      sync();
+    };
+    audio.addEventListener("play", start);
+    audio.addEventListener("playing", start);
+    audio.addEventListener("pause", stop);
+    audio.addEventListener("ended", stop);
+    audio.addEventListener("seeked", sync);
+    if (!audio.paused) start();
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      audio.removeEventListener("play", start);
+      audio.removeEventListener("playing", start);
+      audio.removeEventListener("pause", stop);
+      audio.removeEventListener("ended", stop);
+      audio.removeEventListener("seeked", sync);
+    };
+  }, []);
+
   useEffect(() => {
     if (!editing) return;
     const el = taRef.current;
@@ -1204,9 +1250,6 @@ function TranscriptPlayer({
           controls
           preload="metadata"
           className="flex-1 h-8"
-          onTimeUpdate={(e) =>
-            setCurrentMs(Math.floor(e.currentTarget.currentTime * 1000))
-          }
         />
         {!showEditor && !disabled && (
           <button
@@ -1289,7 +1332,7 @@ function TranscriptPlayer({
                             seek(w.start_ms);
                           }}
                           className={
-                            "cursor-pointer transition-colors rounded px-0.5 " +
+                            "cursor-pointer rounded px-0.5 " +
                             (wordActive
                               ? "bg-[var(--color-text)] text-[var(--color-canvas)]"
                               : "hover:bg-[var(--color-pill-hover)]")
