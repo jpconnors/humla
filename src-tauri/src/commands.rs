@@ -1761,12 +1761,17 @@ pub async fn recording_stop(
     // AVAudioFile reader). Sequencing cleanup behind the chain ensures the
     // full WAVs survive for as long as any post-stop step needs them.
     tokio::spawn(async move {
+        // Flip from Stopping → Diarizing immediately so the user
+        // sees a "processing" pill rather than sitting on Stopping
+        // for the whole post-stop chain. Drain is technically not
+        // diarize, but the user-visible UX is "we're chewing on
+        // your recording" — Diarizing is the right label and gets
+        // re-emitted by diarize_and_apply later (idempotent).
+        emit_status(&app_for_post, Some(&note_for_post), Phase::Diarizing);
+
         // Drain in-flight transcribe tasks (incl. any final chunk
         // spawned during the sidecar's shutdown handler) BEFORE
-        // diarize touches the chunk_log. Done here, not inside
-        // recording_stop, so the user doesn't sit in a Stopping pill
-        // for the duration — the post-stop chain emits Diarizing
-        // shortly after, covering the wait visually.
+        // diarize touches the chunk_log.
         //
         // Generous timeout (300 s) because Whisper inference can
         // accumulate Metal slowdown over a long recording, and the

@@ -43,12 +43,38 @@ pub fn run() {
             // that instead and skips the broken source path entirely
             // — restoring full Metal GPU acceleration.
             //
-            // The metallib itself is built by scripts/build-metallib.sh
-            // (chained from beforeBuildCommand) and bundled via
-            // `bundle.resources` in tauri.conf.json. resource_dir()
-            // returns the right path in both dev and release builds.
+            // Tauri's bundle config maps `resources/default.metallib`
+            // to <Resources>/default.metallib in production, but in
+            // dev mode the path layout is different — try a couple
+            // of plausible locations and log whichever wins so a
+            // missing metallib is visible in stderr instead of just
+            // silently degrading to BLAS.
             if let Ok(resource_dir) = app.path().resource_dir() {
-                std::env::set_var("GGML_METAL_PATH_RESOURCES", &resource_dir);
+                let candidates = [
+                    resource_dir.clone(),
+                    resource_dir.join("resources"),
+                    resource_dir.join("Resources"),
+                ];
+                let found = candidates
+                    .iter()
+                    .find(|p| p.join("default.metallib").exists())
+                    .cloned();
+                match found {
+                    Some(dir) => {
+                        eprintln!(
+                            "ggml metal: GGML_METAL_PATH_RESOURCES={}",
+                            dir.display()
+                        );
+                        std::env::set_var("GGML_METAL_PATH_RESOURCES", &dir);
+                    }
+                    None => {
+                        eprintln!(
+                            "ggml metal: default.metallib not found near {} — Metal will try runtime shader compile and likely fall back to BLAS (CPU). Tried: {}",
+                            resource_dir.display(),
+                            candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
+                        );
+                    }
+                }
             }
 
             let app_dir = app
