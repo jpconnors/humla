@@ -52,41 +52,10 @@ const DEFAULT_KEEP_AUDIO: &str = "false";
 // Metal is broken (e.g. macOS Metal compiler rejecting the bundled
 // shader) can flip this off in Settings to skip the failed init entirely.
 const DEFAULT_LOCAL_WHISPER_USE_GPU: &str = "true";
-// Final pass: re-transcribe the whole recording from the saved full WAV
-// after stop, instead of trusting the live chunked output. Default ON for
-// new installs because it's the higher-quality path; the user can turn it
-// off in Settings if they're on a slow machine or want immediate transcripts.
-// Local provider only at the moment (cloud gets a no-op).
-const DEFAULT_FINAL_PASS: &str = "true";
 const DEFAULT_SUMMARY_MODEL: &str = "gpt-5.4-mini";
 // Ollama's default port + OpenAI-compat path. Any user running LM Studio,
 // llama-server, or vLLM will override this in Settings.
 const DEFAULT_LOCAL_LLM_BASE_URL: &str = "http://localhost:11434/v1";
-const DEFAULT_POLISH_PROMPT: &str = "You are correcting a raw speech-to-text transcript produced by Whisper. The transcript is already mostly correct. Your job is conservative cleanup, not rewriting.
-
-Apply ONLY these changes:
-- Fix typos where the intended word is unambiguous from context.
-- Repair words cut at chunk boundaries (e.g. 'mistred' → 'mistenkte') only when context strongly supports the correction.
-- Add missing punctuation (commas, periods, question marks) where a sentence is clearly complete and unambiguous.
-- Use the user's notes (when provided) and the custom vocabulary (when provided) to spell proper nouns and domain terms correctly.
-
-NEVER:
-- Add or remove line breaks, paragraph breaks, or whitespace structure. Preserve the input's exact line layout.
-- Split sentences that are joined or merge sentences that are split. Leave the existing sentence boundaries alone.
-- Rephrase, 'improve', shorten, or smooth over the speaker's actual words. Preserve their voice — clumsy phrasing stays clumsy.
-- Remove filler ('uh', 'um', 'liksom', 'ikke sant', 'altså'). The user wants their actual speech, not a cleaned-up version. They can edit if they want filler gone.
-- Add headings, bullet lists, markdown, bolding, italics, or any other formatting markers.
-- Add facts, names, numbers, or claims that are not present in the raw transcript.
-- Translate the transcript or change its language.
-
-SPEAKER LABELS:
-- Lines may begin with a speaker label followed by ': ' — e.g. 'Speaker 1: ', 'Speaker 2: ', the special 'You: ' (which marks the user's own side on calls), or a custom name the user has assigned like 'Michael: ' or 'Anna: '. Preserve these labels EXACTLY as they appear: same text, same colon-space, same position at the start of the line.
-- NEVER move text between speakers, merge consecutive turns from different speakers, split a single turn across multiple speakers, or invent new speakers.
-- The number of lines beginning with a label-followed-by-colon must equal the input. The order of speakers must be identical.
-
-When uncertain whether a word is a mishearing, leave it as-is. Doing nothing is always safer than guessing.
-
-Output ONLY the corrected transcript text. Preserve the input's line structure exactly — same number of lines, same line breaks, same paragraph layout. No commentary, no preamble.";
 const DEFAULT_SUMMARY_PROMPT: &str = "Du lager møtenotater fra en automatisk transkribert samtale.\n\nKilder du får:\n- [Notater] — det brukeren skrev under møtet (autoritativ kilde for navn, tall og beslutninger).\n- [Transkripsjon] — automatisk generert fra lyden, kan inneholde feil.\n\nNår transkripsjon og notater er i konflikt, stol på notatene.\n\nSkriv på norsk i Markdown. Inkluder kun seksjoner som er reelt relevante — ikke skriv \"Ingen identifisert\".\n\n- **Sammendrag** — 2–4 setninger som fanger essensen.\n- **Beslutninger** — kun reelle beslutninger som ble tatt.\n- **Handlingspunkter** — på formen \"Beskrivelse — Ansvarlig (frist når oppgitt)\".\n- **Åpne spørsmål** — uavklarte ting som krever oppfølging.\n\nVær konkret og kort. Ikke gjenta deg selv. Ikke finn på detaljer som ikke står i kilden.";
 const API_KEY: &str = "__openai_api_key__";
 
@@ -1034,8 +1003,8 @@ fn parse_engine(engine: Option<String>) -> diarize::Engine {
 }
 
 /// Resolve the active diarization engine from settings. Used by
-/// diarize_and_apply / final_pass_apply when they need to know which
-/// engine to call without the caller having to thread the value through.
+/// diarize_and_apply when it needs to know which engine to call without
+/// the caller having to thread the value through.
 fn active_diarize_engine(state: &State<AppState>) -> diarize::Engine {
     let conn = state.db.lock();
     let id = db::get_setting(&conn, "diarize_model")
@@ -1133,9 +1102,9 @@ async fn write_diagnostics_json(
 
 /// Copy the temp-dir full WAVs to a permanent location keyed by
 /// note_id when the user has opted into audio retention. Called from
-/// the post-stop chain *before* diarize_and_apply / final_pass_apply
-/// consume and delete the temp files via cleanup_full_wav. Best-effort:
-/// individual copy failures log and proceed.
+/// the post-stop chain *before* diarize_and_apply consumes and deletes
+/// the temp files via cleanup_full_wav. Best-effort: individual copy
+/// failures log and proceed.
 async fn maybe_keep_audio(app: &AppHandle, note_id: &str) {
     let state: State<AppState> = app.state();
     let keep = {
@@ -1885,23 +1854,19 @@ pub async fn recording_stop(
     }
 
     // Spawn the post-stop processing chain in the background:
-    //   Stopping → (Retranscribing | Diarizing) → Polishing → Idle
-    // Branch on the `final_pass` setting: when enabled (and provider is
-    // local), retranscribe the full WAV and rebuild the transcript with
-    // segment-level speaker labels. Otherwise apply chunk-level labels
-    // to the live transcript via the original diarize-only path. Polish
-    // runs in either case as a strict typo-and-punctuation cleanup.
+    //   Stopping → Diarizing → Idle
+    // Apply chunk-level speaker labels to the live transcript and write
+    // playback assets, then drop the temp dir.
     let app_for_post = app.clone();
     let note_for_post = note_id.clone();
-    // Move temp_dir into the post-stop task and clean it up *after* polish
-    // completes. The previous design ran a parallel 30s-delay cleanup, which
-    // worked when post-stop took ~10–30s (chunked diarize + polish) but
-    // races the final pass: re-transcribing a 30-minute recording takes
-    // several minutes, the cleanup fires mid-flight, and the diarize sidecar
-    // then tries to open a file that's been deleted out from under it
-    // (surfaces as a CoreAudio "wht?" / 2003334207 error from FluidAudio's
-    // AVAudioFile reader). Sequencing cleanup behind the chain ensures the
-    // full WAVs survive for as long as any post-stop step needs them.
+    // Move temp_dir into the post-stop task and clean it up *after* the
+    // diarize step finishes. A parallel 30s-delay cleanup would race
+    // diarize on long recordings — the cleanup fires mid-flight, and the
+    // diarize sidecar then tries to open a file that's been deleted out
+    // from under it (surfaces as a CoreAudio "wht?" / 2003334207 error
+    // from FluidAudio's AVAudioFile reader). Sequencing cleanup behind
+    // the chain ensures the full WAVs survive for as long as diarize
+    // needs them.
     tokio::spawn(async move {
         // Flip from Stopping → Diarizing immediately so the user
         // sees a "processing" pill rather than sitting on Stopping
@@ -1950,71 +1915,18 @@ pub async fn recording_stop(
         }
 
         // Copy full WAVs to a permanent location FIRST when keep_audio is
-        // on. Both diarize_and_apply and final_pass_apply call
-        // cleanup_full_wav on the temp paths after they're done with
-        // them, so retention has to happen before the diarize step
-        // consumes the files.
+        // on. diarize_and_apply calls cleanup_full_wav on the temp paths
+        // after it's done with them, so retention has to happen before
+        // the diarize step consumes the files.
         maybe_keep_audio(&app_for_post, &note_for_post).await;
 
-        let use_final_pass = {
-            let state: State<AppState> = app_for_post.state();
-            let conn = state.db.lock();
-            let enabled = db::get_setting(&conn, "final_pass")
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| DEFAULT_FINAL_PASS.to_string());
-            let provider = db::get_setting(&conn, "transcribe_provider")
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| DEFAULT_TRANSCRIBE_PROVIDER.to_string());
-            enabled == "true" && provider == "local"
-        };
-        if use_final_pass {
-            if let Err(e) = final_pass_apply(app_for_post.clone(), note_for_post.clone()).await {
-                // Final pass failure leaves the live chunked transcript in
-                // place — the user keeps content. Surface a toast and fall
-                // through to chunk-based diarization so they still get
-                // speaker labels.
-                eprintln!("final_pass_apply: {e}");
-                emit_error(
-                    &app_for_post,
-                    Some(&note_for_post),
-                    &format!("Final pass failed (live transcript saved): {e}"),
-                );
-                if let Err(e2) = diarize_and_apply(app_for_post.clone(), note_for_post.clone()).await {
-                    eprintln!("diarize_and_apply (fallback): {e2}");
-                }
-            }
-        } else if let Err(e) = diarize_and_apply(app_for_post.clone(), note_for_post.clone()).await {
+        if let Err(e) = diarize_and_apply(app_for_post.clone(), note_for_post.clone()).await {
             eprintln!("diarize_and_apply: {e}");
             emit_error(
                 &app_for_post,
                 Some(&note_for_post),
                 &format!("Diarization failed (transcript still saved): {e}"),
             );
-        }
-        // Auto-polish only runs when the user opts in. Default off:
-        // recent dedup + diarize + word-timestamp work has lifted the
-        // raw transcript quality enough that an LLM cleanup pass adds
-        // a 30s+ delay for marginal benefit. The manual `polish_note`
-        // command still works for users who want it on demand.
-        let auto_polish = {
-            let state: State<AppState> = app_for_post.state();
-            let conn = state.db.lock();
-            db::get_setting(&conn, "auto_polish")
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| "false".to_string())
-        };
-        if auto_polish == "true" {
-            if let Err(e) = polish_transcript(app_for_post.clone(), note_for_post.clone()).await {
-                eprintln!("polish_transcript: {e}");
-                emit_error(
-                    &app_for_post,
-                    Some(&note_for_post),
-                    &format!("Polish failed: {e}"),
-                );
-            }
         }
         // Now that every step that needs the WAVs has finished, drop the
         // temp dir. Best-effort: a leftover dir is harmless and gets
@@ -2253,295 +2165,6 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
     // Free the full.wav files ahead of the temp-dir cleanup. Best-effort.
     if let Some(p) = mic_wav { diarize::cleanup_full_wav(&p).await; }
     if let Some(p) = sys_wav { diarize::cleanup_full_wav(&p).await; }
-    Ok(())
-}
-
-/// Re-transcribe the saved full WAV(s) end-to-end, then re-label using the
-/// offline diarizer's speaker segments and the new whisper segment
-/// timestamps. Replaces the live chunked transcript wholesale.
-///
-/// Why bother when chunked already produced a transcript: the live path
-/// invokes Whisper once per VAD-bounded chunk (1.0–15s) with the previous
-/// chunks' text fed back as `initial_prompt`. That is necessary for live
-/// UX but two failure modes show up in the saved transcript:
-///   1. Chunk-boundary cuts. A word straddling a 15s boundary gets sliced
-///      and Whisper re-decodes the trailing fragment in the next chunk.
-///   2. Loop amplification. A low-SNR chunk decoding "X X X" pollutes the
-///      trail; the next chunk sees "X X X" as prior context and decodes
-///      more of the same. Repetition collapse can run for the rest of
-///      the recording.
-/// Re-transcribing the full WAV at stop time gives Whisper its native
-/// 30-second sliding window with internal context across the entire
-/// recording. Effectively free on local (large-v3-turbo runs ~10× realtime
-/// on Apple Silicon, so a 30-minute meeting re-transcribes in ~3 minutes
-/// during the existing post-stop window).
-///
-/// Branches the same way as `diarize_and_apply`:
-///   - mic only → diarize mic, label every whisper segment via segment time
-///   - sys only → diarize sys, same pattern
-///   - both → mic segments labelled `You:` (channel attribution); sys
-///     segments diarized for remote-side speakers
-///
-/// No-ops gracefully when the model isn't downloaded, the user disabled
-/// final_pass, the active provider isn't local, or no full WAV survived.
-/// Failure leaves the live (chunked) transcript intact so the user never
-/// loses content — they just don't get the cleanup pass.
-async fn final_pass_apply(app: AppHandle, note_id: String) -> anyhow::Result<()> {
-    // Setting + provider gate. Cloud OpenAI isn't supported yet because the
-    // verbose_json segment-with-timestamp variant needs a separate request
-    // path; planned for a follow-up.
-    let (enabled, provider) = {
-        let state: State<AppState> = app.state();
-        let conn = state.db.lock();
-        let enabled = db::get_setting(&conn, "final_pass")?
-            .unwrap_or_else(|| DEFAULT_FINAL_PASS.to_string());
-        let provider = db::get_setting(&conn, "transcribe_provider")?
-            .unwrap_or_else(|| DEFAULT_TRANSCRIBE_PROVIDER.to_string());
-        (enabled, provider)
-    };
-    if enabled != "true" || provider != "local" {
-        return Ok(());
-    }
-
-    // Pull paths + transcribe config in one DB pass so the long awaits
-    // below don't hold any locks.
-    let (mic_wav, sys_wav, snapshot, expected_speakers, language, whisper_preset, vocabulary, engine, thresholds) = {
-        let state: State<AppState> = app.state();
-        let session = state.recording.lock();
-        let mic = session.mic_full_wav_path.lock().clone();
-        let sys = session.sys_full_wav_path.lock().clone();
-        let snap = session.transcript_at_start.lock().clone();
-        drop(session);
-        let eng = active_diarize_engine(&state);
-        let thr = read_diarize_thresholds(&state);
-        let conn = state.db.lock();
-        let global_language = db::get_setting(&conn, "language")?
-            .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
-        let note = db::get_note(&conn, &note_id)?;
-        let lang = if note.language.trim().is_empty() {
-            global_language
-        } else {
-            note.language
-        };
-        let hint = note.expected_speakers.filter(|n| *n > 0);
-        let preset = db::get_setting(&conn, "whisper_preset")?
-            .unwrap_or_else(|| DEFAULT_WHISPER_PRESET.to_string());
-        let vocab = db::get_setting(&conn, "custom_vocabulary")?.unwrap_or_default();
-        (mic, sys, snap, hint, lang, preset, vocab, eng, thr)
-    };
-
-    if mic_wav.is_none() && sys_wav.is_none() {
-        // Sidecar SIGKILL'd before either full WAV got finalized. Live
-        // transcript stays as written.
-        eprintln!("final_pass: no full WAV present, skipping");
-        return Ok(());
-    }
-
-    emit_status(&app, Some(&note_id), Phase::Retranscribing);
-
-    let model_path = local_model_path(&app, &language).map_err(|e| anyhow::anyhow!(e))?;
-    let (shared, use_gpu) = {
-        let state: State<AppState> = app.state();
-        (state.whisper.clone(), local_whisper_use_gpu_setting(&state))
-    };
-    let preset = local_whisper::Preset::from_setting(&whisper_preset);
-    // No trail snapshot here — whisper's own 30s sliding window handles
-    // context across the full file, and there's no prior chunk to
-    // condition on.
-    let prompt = build_initial_prompt(&vocabulary, None);
-
-    let mic_segs: Vec<local_whisper::TextSegment> = if let Some(p) = mic_wav.as_ref() {
-        local_whisper::transcribe_file_segments(
-            shared.clone(),
-            model_path.clone(),
-            use_gpu,
-            &language,
-            prompt.as_deref(),
-            preset,
-            p,
-        )
-        .await?
-    } else {
-        Vec::new()
-    };
-    let sys_segs: Vec<local_whisper::TextSegment> = if let Some(p) = sys_wav.as_ref() {
-        local_whisper::transcribe_file_segments(
-            shared.clone(),
-            model_path.clone(),
-            use_gpu,
-            &language,
-            prompt.as_deref(),
-            preset,
-            p,
-        )
-        .await?
-    } else {
-        Vec::new()
-    };
-
-    // Convert whisper segments into ChunkRecord shape so we can reuse
-    // build_labelled_transcript and assign_speaker as-is. Same data flow
-    // as the chunked path; only the source of timing + text differs.
-    let mut chunks: Vec<ChunkRecord> = Vec::with_capacity(mic_segs.len() + sys_segs.len());
-    // Final-pass synthesises chunks from whisper's segment output.
-    // The segments carry word data already; rebase each word's
-    // timestamp from segment-relative to chunk-relative (which is
-    // identical here, since each segment becomes one chunk and the
-    // chunk's start_ms is the segment's start_ms).
-    chunks.extend(mic_segs.into_iter().map(|s| {
-        let seg_start = s.start_ms;
-        ChunkRecord {
-            source: ChunkSource::Mic,
-            start_ms: seg_start,
-            text: s.text,
-            words: s
-                .words
-                .into_iter()
-                .map(|w| crate::recording::ChunkWord {
-                    text: w.text,
-                    start_ms: w.start_ms.saturating_sub(seg_start),
-                    end_ms: w.end_ms.saturating_sub(seg_start),
-                })
-                .collect(),
-        }
-    }));
-    chunks.extend(sys_segs.into_iter().map(|s| {
-        let seg_start = s.start_ms;
-        ChunkRecord {
-            source: ChunkSource::Sys,
-            start_ms: seg_start,
-            text: s.text,
-            words: s
-                .words
-                .into_iter()
-                .map(|w| crate::recording::ChunkWord {
-                    text: w.text,
-                    start_ms: w.start_ms.saturating_sub(seg_start),
-                    end_ms: w.end_ms.saturating_sub(seg_start),
-                })
-                .collect(),
-        }
-    }));
-
-    if chunks.is_empty() {
-        eprintln!("final_pass: whisper returned zero segments, skipping");
-        return Ok(());
-    }
-
-    let mic_present = chunks.iter().any(|c| c.source == ChunkSource::Mic);
-    let sys_present = chunks.iter().any(|c| c.source == ChunkSource::Sys);
-
-    // Skip diarization gracefully when the model isn't installed — drop to
-    // a single label per stream rather than failing the whole final pass.
-    let diarize_available = matches!(diarize::status(&app, engine).await, Ok(s) if s.downloaded);
-
-    type Splitter = dyn Fn(&ChunkRecord) -> Vec<LabelledPiece> + Send;
-    let split_chunk: Box<Splitter> = match (mic_present, sys_present) {
-        (true, false) => {
-            if diarize_available {
-                let Some(wav) = mic_wav.clone() else {
-                    eprintln!("final_pass: mic segments present but mic_full.wav missing");
-                    return Ok(());
-                };
-                let segments = diarize::diarize_file(&app, &wav, expected_speakers, engine, thresholds).await?;
-                write_diagnostics_json(&app, &note_id, engine, "mic", &segments, &chunks, &thresholds).await;
-                if segments.is_empty() {
-                    Box::new(|c: &ChunkRecord| single_piece(c, Some("Speaker 1".to_string())))
-                } else {
-                    let display_map = build_display_map(&chunks, &segments, ChunkSource::Mic);
-                    Box::new(move |c: &ChunkRecord| split_by_segments(c, &segments, &display_map))
-                }
-            } else {
-                Box::new(|c: &ChunkRecord| single_piece(c, Some("Speaker 1".to_string())))
-            }
-        }
-        (false, true) => {
-            if diarize_available {
-                let Some(wav) = sys_wav.clone() else {
-                    eprintln!("final_pass: sys segments present but sys_full.wav missing");
-                    return Ok(());
-                };
-                let segments = diarize::diarize_file(&app, &wav, expected_speakers, engine, thresholds).await?;
-                write_diagnostics_json(&app, &note_id, engine, "sys", &segments, &chunks, &thresholds).await;
-                if segments.is_empty() {
-                    Box::new(|c: &ChunkRecord| single_piece(c, Some("Speaker 1".to_string())))
-                } else {
-                    let display_map = build_display_map(&chunks, &segments, ChunkSource::Sys);
-                    Box::new(move |c: &ChunkRecord| split_by_segments(c, &segments, &display_map))
-                }
-            } else {
-                Box::new(|c: &ChunkRecord| single_piece(c, Some("Speaker 1".to_string())))
-            }
-        }
-        (true, true) => {
-            // Remote/hybrid: mic = "You" (channel attribution); sys gets
-            // diarized for remote-side speakers. Same shape as the
-            // chunked path.
-            let sys_speaker_hint = expected_speakers.map(|n| (n - 1).max(1));
-            let sys_segments = if diarize_available {
-                if let Some(p) = sys_wav.as_ref() {
-                    diarize::diarize_file(&app, p, sys_speaker_hint, engine, thresholds)
-                        .await
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            };
-            write_diagnostics_json(&app, &note_id, engine, "sys", &sys_segments, &chunks, &thresholds).await;
-            if sys_segments.is_empty() {
-                Box::new(move |c: &ChunkRecord| match c.source {
-                    ChunkSource::Mic => single_piece(c, Some("You".to_string())),
-                    ChunkSource::Sys => single_piece(c, Some("Speaker 1".to_string())),
-                })
-            } else {
-                let sys_display_map = build_display_map(&chunks, &sys_segments, ChunkSource::Sys);
-                Box::new(move |c: &ChunkRecord| match c.source {
-                    ChunkSource::Mic => single_piece(c, Some("You".to_string())),
-                    ChunkSource::Sys => split_by_segments(c, &sys_segments, &sys_display_map),
-                })
-            }
-        }
-        (false, false) => unreachable!("chunks.is_empty() returned earlier"),
-    };
-
-    let new_session = build_labelled_transcript(&chunks, split_chunk.as_ref());
-    let combined = combine_with_snapshot(&snapshot, &new_session);
-    if combined.trim().is_empty() {
-        return Ok(());
-    }
-    {
-        let state: State<AppState> = app.state();
-        let conn = state.db.lock();
-        db::set_transcript(&conn, &note_id, &combined)?;
-    }
-    let _ = app.emit(
-        "transcript_replaced",
-        TranscriptPayload {
-            note_id: note_id.clone(),
-            text: combined,
-        },
-    );
-
-    // Refresh playback bundle from the final-pass transcript. Same
-    // contract as diarize_and_apply.
-    let timeline = serialize_timeline(&chunks, split_chunk.as_ref());
-    write_playback_assets(
-        &app,
-        &note_id,
-        timeline,
-        mic_wav.as_deref(),
-        sys_wav.as_deref(),
-    )
-    .await;
-
-    if let Some(p) = mic_wav {
-        diarize::cleanup_full_wav(&p).await;
-    }
-    if let Some(p) = sys_wav {
-        diarize::cleanup_full_wav(&p).await;
-    }
     Ok(())
 }
 
@@ -3384,11 +3007,11 @@ async fn transcribe_chunk(
 
     // Push to chunk_log unconditionally — even when the session has
     // been cleared by recording_stop. The post-stop chain's
-    // diarize_and_apply / final_pass_apply rebuild the transcript
-    // from chunk_log, so a tail chunk that finished decoding after
-    // recording_stop still gets included. Without this, the last
-    // 5–20 s of audio (any in-flight transcribe completing after
-    // stop) would silently vanish — the bug user reported.
+    // diarize_and_apply rebuilds the transcript from chunk_log, so a
+    // tail chunk that finished decoding after recording_stop still gets
+    // included. Without this, the last 5–20 s of audio (any in-flight
+    // transcribe completing after stop) would silently vanish — the
+    // bug user reported.
     //
     // Words come from local Whisper only and arrive with chunk-
     // relative timestamps (whisper timed against this chunk's WAV,
@@ -3460,9 +3083,9 @@ struct TranscribeCfg {
     vocabulary: String,
 }
 
-// Resolved provider for a single polish or summary call. Both cloud OpenAI
-// and any local OpenAI-compatible server (Ollama, LM Studio, llama-server,
-// vLLM) flow through this same shape — the only difference is `base_url`.
+// Resolved provider for a single summary call. Both cloud OpenAI and any
+// local OpenAI-compatible server (Ollama, LM Studio, llama-server, vLLM)
+// flow through this same shape — the only difference is `base_url`.
 struct ResolvedProvider {
     base_url: String,
     api_key: String,
@@ -3473,8 +3096,8 @@ struct ResolvedProvider {
     think: bool,
 }
 
-// Decide whether this note's polish/summary call should hit cloud OpenAI or
-// a local OpenAI-compatible server. Note-level override beats the global
+// Decide whether this note's summary call should hit cloud OpenAI or a
+// local OpenAI-compatible server. Note-level override beats the global
 // setting; default is openai.
 //
 // For local: reads `local_llm_base_url` and `local_llm_model` from settings.
@@ -3552,174 +3175,6 @@ pub async fn summarize_note(app: AppHandle, note_id: String) -> Result<(), Strin
         Err(e) => eprintln!("[llm] summarize_note failed: {e:#}"),
     }
     result.map_err(|e| e.to_string())
-}
-
-/// User-triggered polish. **Cloud-only by design** — polish is a fast,
-/// cheap cleanup that takes seconds on OpenAI but several minutes on a
-/// local Qwen 3.5:9B (often with thinking-mode loops on top). The per-note
-/// `summary_provider` override applies to *summaries*; polish always uses
-/// the OpenAI cloud provider regardless of that setting. Errors clearly
-/// when no OpenAI API key is configured.
-#[tauri::command]
-pub async fn polish_note(app: AppHandle, note_id: String) -> Result<(), String> {
-    let provider = {
-        let state: State<AppState> = app.state();
-        let conn = state.db.lock();
-        let n = db::get_note(&conn, &note_id).map_err(err)?;
-        if n.transcript.trim().is_empty() {
-            return Err("Nothing to polish — transcript is empty.".to_string());
-        }
-        let api_key = db::get_setting(&conn, API_KEY)
-            .map_err(err)?
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                "Polish requires an OpenAI API key. Add one in Settings to enable polish."
-                    .to_string()
-            })?;
-        let model = db::get_setting(&conn, "summary_model")
-            .map_err(err)?
-            .unwrap_or_else(|| DEFAULT_SUMMARY_MODEL.to_string());
-        ResolvedProvider {
-            base_url: openai::BASE.into(),
-            api_key,
-            model,
-            think: false,
-        }
-    };
-
-    let app_for_task = app.clone();
-    let note_for_task = note_id.clone();
-    tokio::spawn(async move {
-        if let Err(e) =
-            polish_transcript_inner(app_for_task.clone(), note_for_task.clone(), provider).await
-        {
-            eprintln!("manual polish failed: {e:#}");
-            emit_error(
-                &app_for_task,
-                Some(&note_for_task),
-                &format!("Polish failed: {e}"),
-            );
-        }
-        emit_status(&app_for_task, None, Phase::Idle);
-    });
-    Ok(())
-}
-
-// Auto-polish entry point used by recording_stop. Resolves the configured
-// summary provider and skips on local — local polish would block the user's
-// subsequent Summarize click for several minutes. Manual polish_note builds
-// its own cloud-only provider and calls polish_transcript_inner directly.
-async fn polish_transcript(app: AppHandle, note_id: String) -> anyhow::Result<()> {
-    let provider = {
-        let state: State<AppState> = app.state();
-        let conn = state.db.lock();
-        let n = match db::get_note(&conn, &note_id) {
-            Ok(n) => n,
-            Err(_) => return Ok(()),
-        };
-        if n.transcript.trim().is_empty() {
-            return Ok(());
-        }
-        match resolve_provider(&conn, &n) {
-            Ok(p) if p.base_url == openai::BASE => p,
-            Ok(_) => {
-                eprintln!("[llm] auto-polish skipped (local provider): note={note_id}");
-                return Ok(());
-            }
-            Err(_) => return Ok(()),
-        }
-    };
-    polish_transcript_inner(app, note_id, provider).await
-}
-
-// Polish a freshly-recorded transcript via a chat-completion pass. Whisper's
-// raw output is usually correct in substance but littered with typos,
-// chunk-boundary mid-word cuts ("mistenkte" → "mistred"), and missing
-// punctuation. The user's notes + custom vocabulary are passed as context so
-// the model spells proper nouns and domain terms correctly.
-//
-// Provider is supplied by the caller so polish_note (manual) can force
-// OpenAI cloud while polish_transcript (auto) follows the configured
-// summary provider. Skips silently when the transcript was modified
-// between the snapshot read and the polished write — the user started
-// another recording on the same note while polish was in flight, and we
-// don't want to clobber freshly-appended chunks.
-async fn polish_transcript_inner(
-    app: AppHandle,
-    note_id: String,
-    provider: ResolvedProvider,
-) -> anyhow::Result<()> {
-    let (transcript_snapshot, body, vocabulary) = {
-        let state: State<AppState> = app.state();
-        let conn = state.db.lock();
-        let n = db::get_note(&conn, &note_id)?;
-        if n.transcript.trim().is_empty() {
-            return Ok(()); // nothing to polish
-        }
-        let vocab = db::get_setting(&conn, "custom_vocabulary")?.unwrap_or_default();
-        (n.transcript.clone(), n.body.clone(), vocab)
-    };
-
-    let body_text = html_to_text(&body);
-    let vocab_section = if vocabulary.trim().is_empty() {
-        String::new()
-    } else {
-        format!("[Vocabulary]\n{}\n\n", vocabulary.trim())
-    };
-    let notes_section = if body_text.trim().is_empty() {
-        String::new()
-    } else {
-        format!("[Notes]\n{}\n\n", body_text.trim())
-    };
-    let user_message =
-        format!("{vocab_section}{notes_section}[Raw transcript]\n{transcript_snapshot}");
-
-    emit_status(&app, Some(&note_id), Phase::Polishing);
-    let polished = openai::summarize_with_base(
-        &provider.base_url,
-        &provider.api_key,
-        &provider.model,
-        provider.think,
-        DEFAULT_POLISH_PROMPT,
-        &user_message,
-        |_| {}, // polish never runs on local, no streaming UI
-    )
-    .await?;
-    let polished = polished.trim().to_string();
-    if polished.is_empty() {
-        return Ok(());
-    }
-
-    // Concurrency guard: if the transcript changed under us (user started a
-    // new recording on the same note before polish finished), keep their
-    // raw additions instead of clobbering with the snapshot's polished
-    // version.
-    {
-        let state: State<AppState> = app.state();
-        let conn = state.db.lock();
-        let current = db::get_note(&conn, &note_id)?;
-        if current.transcript != transcript_snapshot {
-            return Ok(());
-        }
-        db::update_note(
-            &conn,
-            &note_id,
-            &NotePatch {
-                transcript: Some(polished.clone()),
-                ..Default::default()
-            },
-        )?;
-    }
-
-    let _ = app.emit(
-        "transcript_replaced",
-        TranscriptPayload {
-            note_id,
-            text: polished,
-        },
-    );
-    Ok(())
 }
 
 async fn run_summary(app: AppHandle, note_id: String) -> anyhow::Result<()> {

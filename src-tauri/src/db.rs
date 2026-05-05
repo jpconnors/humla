@@ -307,8 +307,7 @@ pub fn append_transcript(conn: &Connection, id: &str, text: &str, separator: &st
 
 /// Replace the note's transcript with `text`. Used by the offline
 /// diarization step to rewrite a chunk-by-chunk transcript with
-/// `Speaker N:` prefixes once the full audio has been clustered, and by
-/// the polish step which regenerates the whole transcript at once.
+/// `Speaker N:` prefixes once the full audio has been clustered.
 pub fn set_transcript(conn: &Connection, id: &str, text: &str) -> Result<()> {
     let now = now_ms();
     // Same SQL string as the transcript branch of update_note and the

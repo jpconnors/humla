@@ -170,7 +170,6 @@ pub fn run() {
             commands::recording_resume,
             commands::recording_state,
             commands::summarize_note,
-            commands::polish_note,
             commands::permissions_status,
             commands::permissions_request,
             commands::permissions_open_settings,

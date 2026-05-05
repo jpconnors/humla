@@ -39,6 +39,7 @@ SRC_HASH=$(
       \( -name '*.swift' -o -name 'Package.swift' \) -print0 \
       | sort -z \
       | xargs -0 shasum -a 256
+    [[ -f "audio-capture/Info.plist" ]] && shasum -a 256 audio-capture/Info.plist
     [[ -f "$ENTITLEMENTS" ]] && shasum -a 256 "$ENTITLEMENTS"
     echo "identity:$IDENTITY"
   } | shasum -a 256 | awk '{print $1}'

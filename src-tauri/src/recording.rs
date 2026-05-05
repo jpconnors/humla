@@ -196,8 +196,6 @@ pub enum Phase {
     Paused,
     Stopping,
     Diarizing,
-    Retranscribing,
-    Polishing,
     Summarizing,
 }
 

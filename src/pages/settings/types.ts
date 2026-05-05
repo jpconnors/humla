@@ -20,7 +20,6 @@ export const DEFAULTS: Record<EditableKey, string> = {
   whisper_preset: "quality",
   local_whisper_model: "large-v3-turbo-q5",
   local_whisper_use_gpu: "true",
-  final_pass: "true",
   default_summary_preset: "meeting",
   diarize_model: "community1",
   community1_threshold: "0.5",
@@ -35,7 +34,6 @@ export const DEFAULTS: Record<EditableKey, string> = {
   local_llm_model: "",
   local_llm_think: "false",
   developer_mode: "false",
-  auto_polish: "false",
   silence_rms_threshold: "0.008",
 };
 

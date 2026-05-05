@@ -250,6 +250,15 @@ fn ensure_loaded(
     // fine if a user drops in their own ggml file, hence the safe fallback.
     params.dtw_parameters = DtwParameters {
         mode: dtw_mode_for_model(model_path),
+        // whisper-rs default is 128 MB. DTW allocates a fresh ggml context
+        // per segment holding all intermediate tensors (cross-QK gather,
+        // norm, permute, median filter, mean) until the segment finishes.
+        // 128 MB occasionally tips over on dense speech with LargeV3Turbo's
+        // alignment-head count, triggering `ggml_abort: not enough space in
+        // the context's memory pool` → SIGABRT. Pool is allocated lazily
+        // per DTW pass and freed at end-of-segment, so this is a ceiling,
+        // not a constant cost.
+        dtw_mem_size: 1024 * 1024 * 384,
         ..DtwParameters::default()
     };
     let ctx = WhisperContext::new_with_params(

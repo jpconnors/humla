@@ -13,10 +13,9 @@ pub fn client() -> reqwest::Client {
 
 // Local LLM servers (Ollama especially) cold-load the model on first request
 // (~10s on a 9B), then generate at ~30 tok/s on Apple Silicon. A long-meeting
-// summary can run 60s; long-meeting *polish* (which regenerates the whole
-// transcript) can run several minutes. 10 minutes is generous enough that
-// genuine slow paths complete, while still surfacing a wedged server as an
-// error rather than hanging the UI indefinitely.
+// summary can run 60s. 10 minutes is generous enough that genuine slow paths
+// complete, while still surfacing a wedged server as an error rather than
+// hanging the UI indefinitely.
 fn local_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(600))

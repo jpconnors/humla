@@ -40,7 +40,6 @@ export type SettingsKey =
   | "whisper_preset"
   | "local_whisper_model"
   | "local_whisper_use_gpu"
-  | "final_pass"
   | "default_summary_preset"
   | "diarize_model"
   | "community1_threshold"
@@ -56,7 +55,6 @@ export type SettingsKey =
   | "local_llm_think"
   | "theme"
   | "developer_mode"
-  | "auto_polish"
   | "silence_rms_threshold";
 
 export type TranscribeProvider = "openai" | "local";
@@ -211,7 +209,6 @@ export const ipc = {
   recordingResume: () => invoke<void>("recording_resume"),
   recordingState: () => invoke<"idle" | "recording">("recording_state"),
   summarizeNote: (noteId: string) => invoke<void>("summarize_note", { noteId }),
-  polishNote: (noteId: string) => invoke<void>("polish_note", { noteId }),
 
   permissionsStatus: () => invoke<PermissionsStatus>("permissions_status"),
   permissionsRequest: (kind: PermissionKind) => invoke<PermissionsStatus>("permissions_request", { kind }),
@@ -233,7 +230,7 @@ export type PermissionsStatus = {
 export type TranscriptEvent = { noteId: string; text: string };
 export type SummaryEvent = { noteId: string; summary: string };
 export type StreamDeltaEvent = { noteId: string; delta: string };
-export type RecordingPhase = "idle" | "starting" | "recording" | "paused" | "stopping" | "diarizing" | "retranscribing" | "polishing" | "summarizing";
+export type RecordingPhase = "idle" | "starting" | "recording" | "paused" | "stopping" | "diarizing" | "summarizing";
 export type SummaryProvider = "openai" | "local";
 export type RecordingStatus = { noteId: string | null; phase: RecordingPhase };
 export type RecordingError = { noteId: string | null; message: string };

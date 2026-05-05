@@ -110,7 +110,6 @@ export function Note() {
   const isStarting = isThisNoteActive && recPhase.phase === "starting";
   const isStopping = isThisNoteActive && recPhase.phase === "stopping";
   const isDiarizing = isThisNoteActive && recPhase.phase === "diarizing";
-  const isPolishing = isThisNoteActive && recPhase.phase === "polishing";
   const isSummarizing = isThisNoteActive && recPhase.phase === "summarizing";
 
   // Subscribe once per note id. Only append a delta if it belongs to this
@@ -180,12 +179,12 @@ export function Note() {
   }, [draft?.title]);
 
   // Always pull summary updates from the store. Pull transcript updates only
-  // while a recording, diarization, or polish is in flight — otherwise our
-  // debounced save round-trips through the store and clobbers in-progress
-  // edits. Diarization and polish both replace the transcript wholesale,
-  // so we want the editor to reflect those updates immediately.
+  // while a recording or diarization is in flight — otherwise our debounced
+  // save round-trips through the store and clobbers in-progress edits.
+  // Diarization replaces the transcript wholesale, so we want the editor to
+  // reflect that update immediately.
   const allowTranscriptSync =
-    isRecording || isPaused || isStarting || isStopping || isDiarizing || isPolishing;
+    isRecording || isPaused || isStarting || isStopping || isDiarizing;
   useEffect(() => {
     if (!note || !draft || note.id !== draft.id) return;
     setDraft((d) => {
@@ -198,11 +197,11 @@ export function Note() {
   }, [note?.transcript, note?.summary, allowTranscriptSync]);
 
   // Re-fetch the playback bundle whenever the note id or recording
-  // phase changes. The post-stop chain (diarize → polish) writes the
-  // bundle mid-flight, so depending only on draft.id would leave the
-  // player hidden until the user navigates away and back. Stable
-  // recording_phase transitions: stopping → diarizing → polishing →
-  // idle — by the time we land on idle, the bundle exists.
+  // phase changes. The post-stop diarize step writes the bundle, so
+  // depending only on draft.id would leave the player hidden until
+  // the user navigates away and back. Stable recording_phase
+  // transitions: stopping → diarizing → idle — by the time we land
+  // on idle, the bundle exists.
   useEffect(() => {
     if (!draft) return;
     let cancelled = false;
@@ -478,13 +477,13 @@ export function Note() {
                     playbackUrl={playbackUrl}
                     transcript={draft.transcript}
                     onChange={(v) => patch("transcript", v)}
-                    disabled={isRecording || isPaused || isStarting || isStopping || isDiarizing || isPolishing}
+                    disabled={isRecording || isPaused || isStarting || isStopping || isDiarizing}
                   />
                 ) : (
                   <TranscriptEditor
                     value={draft.transcript}
                     onChange={(v) => patch("transcript", v)}
-                    disabled={isRecording || isPaused || isStarting || isStopping || isDiarizing || isPolishing}
+                    disabled={isRecording || isPaused || isStarting || isStopping || isDiarizing}
                   />
                 )}
                 {isRecording && <SkeletonLines lines={2} className="mt-3" />}
@@ -872,8 +871,8 @@ function SpeakerChip({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   // Snap the draft back to the canonical label whenever the underlying
-  // label changes (e.g. polish replaced the transcript and our label was
-  // re-derived).
+  // label changes (e.g. diarize replaced the transcript and our label
+  // was re-derived).
   useEffect(() => {
     setDraft(label);
   }, [label]);
@@ -972,7 +971,7 @@ function TranscriptEditor({
 
   // Force the styled-view path while a recording is in flight — we don't
   // want the user typing into a transcript that the backend is about to
-  // replace via diarize/polish.
+  // replace via diarize.
   const showEditor = editing && !disabled;
 
   if (showEditor) {
@@ -1477,11 +1476,10 @@ function escapeHtml(s: string): string {
 // at recording time. Clicks open the folder in Finder via Tauri's
 // shell plugin (works on both files and directories on macOS).
 //
-// Re-polls on every recording-phase transition so the post-stop
-// chain's diagnostic write becomes visible without a page refresh:
-// the diarize/retranscribe/polish phases all write files mid-flight,
-// and depending only on `noteId` (which doesn't change) would leave
-// the link hidden until the user navigated away and back.
+// Re-polls on every recording-phase transition so the diarize step's
+// diagnostic write becomes visible without a page refresh: depending
+// only on `noteId` (which doesn't change) would leave the link hidden
+// until the user navigated away and back.
 function DiagnosticsLinks({ noteId }: { noteId: string }) {
   const [diagFiles, setDiagFiles] = useState<string[]>([]);
   const [audioFiles, setAudioFiles] = useState<string[]>([]);

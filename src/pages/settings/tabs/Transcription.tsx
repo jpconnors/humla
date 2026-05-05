@@ -114,26 +114,6 @@ export function TranscriptionTab({
               slower but reliable.
             </p>
           </Row>
-          <Row label="Final pass">
-            <label className="flex items-center gap-2 cursor-pointer text-sm">
-              <input
-                type="checkbox"
-                checked={s.final_pass === "true"}
-                onChange={(e) =>
-                  update("final_pass", e.target.checked ? "true" : "false")
-                }
-              />
-              Re-transcribe the full audio after recording stops
-            </label>
-            <p className="text-xs text-[var(--color-text-muted)] mt-2">
-              When the recording ends, runs Whisper once over the saved
-              audio with its native 30-second sliding window. Removes
-              chunk-boundary cuts and breaks repetition loops that
-              contaminated the live transcript. Local model only — adds
-              roughly 1 minute of post-stop processing per 10 minutes of
-              recording.
-            </p>
-          </Row>
         </Section>
       )}
 
@@ -152,9 +132,8 @@ export function TranscriptionTab({
         <p className="text-xs text-[var(--color-text-muted)]">
           When downloaded and active, every recording is automatically
           tagged with <code>Speaker 1:</code> / <code>Speaker 2:</code>
-          labels before polishing. Both engines run locally via CoreML /
-          Apple Neural Engine; pick whichever works better for your
-          recordings.
+          labels after stop. Both engines run locally via CoreML / Apple
+          Neural Engine; pick whichever works better for your recordings.
         </p>
         <Row label="Community-1 (clustering)">
           <label className="flex items-center gap-2 cursor-pointer text-sm mb-2">
@@ -290,28 +269,6 @@ export function TranscriptionTab({
             from its header to inspect where shifts landed.
           </p>
         </Row>}
-      </Section>
-
-      <Section title="Post-processing">
-        <Row label="Auto-polish on stop">
-          <label className="flex items-center gap-2 cursor-pointer text-sm">
-            <input
-              type="checkbox"
-              checked={s.auto_polish === "true"}
-              onChange={(e) =>
-                update("auto_polish", e.target.checked ? "true" : "false")
-              }
-            />
-            Run an LLM cleanup pass after every recording
-          </label>
-          <p className="text-xs text-[var(--color-text-muted)] mt-2">
-            Off by default — recent dedup + diarize improvements
-            already produce a clean transcript, and the polish pass
-            adds 30s+ to the post-stop wait. Turn on if you want
-            stricter typo / punctuation correction. The "Polish"
-            button on each note still runs polish on demand.
-          </p>
-        </Row>
       </Section>
 
       <Section title="Audio retention">

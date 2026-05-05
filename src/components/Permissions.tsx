@@ -35,12 +35,16 @@ export function Permissions() {
   }
 
   useEffect(() => {
+    // No interval polling — every status call spawns the audio-capture
+    // sidecar (same binary is reused via a `status` subcommand), which both
+    // wastes cycles and makes audio-capture flicker in Activity Monitor while
+    // the user is just sitting on Settings → General. macOS doesn't change
+    // TCC state without a trip through System Settings, and coming back from
+    // there fires the focus event below.
     refresh();
-    const t = window.setInterval(refresh, 5000);
     const onFocus = () => refresh();
     window.addEventListener("focus", onFocus);
     return () => {
-      window.clearInterval(t);
       window.removeEventListener("focus", onFocus);
     };
   }, []);
