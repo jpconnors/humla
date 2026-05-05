@@ -1987,12 +1987,18 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
         eprintln!("diarize: no chunks captured, skipping");
         return Ok(());
     }
-    // Skip silently when the model isn't downloaded — diarization is
-    // optional and the user might not have grabbed the model yet.
+    // Skip when the model isn't downloaded — diarization is optional, but
+    // tell the user so they don't sit confused waiting for speaker labels
+    // that will never arrive.
     match diarize::status(&app, engine).await {
         Ok(s) if s.downloaded => {}
         _ => {
             eprintln!("diarize: model not downloaded, skipping");
+            emit_error(
+                &app,
+                Some(&note_id),
+                "Speaker diarization model isn't downloaded — transcript saved without speaker labels. Download it from Settings → Speaker diarization.",
+            );
             return Ok(());
         }
     }
@@ -2015,48 +2021,98 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
             // In-person mode: diarize the mic stream, every chunk gets a
             // numbered label from its segment. The per-note expected
             // speaker hint applies directly — every speaker is on the mic.
-            let Some(wav) = mic_wav.clone() else {
-                // Missing mic_full.wav despite mic chunks: typically a
-                // SIGKILL of the audio-capture sidecar before its shutdown
-                // handler ran. Surface a toast so the user understands why
-                // their transcript shows no speaker labels.
-                eprintln!("diarize: mic chunks present but mic_full.wav missing, skipping");
-                emit_error(
-                    &app,
-                    Some(&note_id),
-                    "Diarization unavailable: the recording sidecar didn't write the full audio file. Transcript saved without speaker labels.",
-                );
-                return Ok(());
+            //
+            // Three failure modes drop us into a single-speaker fallback
+            // (every mic chunk gets `Speaker 1:`) instead of returning
+            // early with no labels:
+            //   1. mic_full.wav missing — sidecar SIGKILL'd before close.
+            //   2. diarize sidecar errored.
+            //   3. diarize returned zero segments.
+            // Applying the fallback rather than bailing keeps the post-stop
+            // behaviour consistent with the hybrid branch and gives the user
+            // visible evidence that diarize ran.
+            let single_speaker_fallback = || -> Box<Splitter> {
+                Box::new(|c: &ChunkRecord| single_piece(c, Some("Speaker 1".to_string())))
             };
-            let segments = diarize::diarize_file(&app, &wav, expected_speakers, engine, thresholds).await?;
-            write_diagnostics_json(&app, &note_id, engine, "mic", &segments, &chunks, &thresholds).await;
-            if segments.is_empty() {
-                eprintln!("diarize: no segments returned for mic stream, leaving transcript untagged");
-                return Ok(());
+            match mic_wav.clone() {
+                None => {
+                    eprintln!("diarize: mic chunks present but mic_full.wav missing, falling back to single-speaker labels");
+                    emit_error(
+                        &app,
+                        Some(&note_id),
+                        "Diarization unavailable: the recording sidecar didn't write the full audio file. All speech grouped under Speaker 1.",
+                    );
+                    single_speaker_fallback()
+                }
+                Some(wav) => match diarize::diarize_file(&app, &wav, expected_speakers, engine, thresholds).await {
+                    Err(e) => {
+                        eprintln!("diarize: mic diarize failed ({e}), falling back to single-speaker labels");
+                        emit_error(
+                            &app,
+                            Some(&note_id),
+                            &format!("Diarization failed ({e}); all speech grouped under Speaker 1."),
+                        );
+                        single_speaker_fallback()
+                    }
+                    Ok(segments) if segments.is_empty() => {
+                        eprintln!("diarize: no segments returned for mic stream, falling back to single-speaker labels");
+                        emit_error(
+                            &app,
+                            Some(&note_id),
+                            "Diarization found no distinct speakers; all speech grouped under Speaker 1.",
+                        );
+                        single_speaker_fallback()
+                    }
+                    Ok(segments) => {
+                        write_diagnostics_json(&app, &note_id, engine, "mic", &segments, &chunks, &thresholds).await;
+                        let display_map = build_display_map(&chunks, &segments, ChunkSource::Mic);
+                        Box::new(move |c: &ChunkRecord| split_by_segments(c, &segments, &display_map))
+                    }
+                },
             }
-            let display_map = build_display_map(&chunks, &segments, ChunkSource::Mic);
-            Box::new(move |c: &ChunkRecord| split_by_segments(c, &segments, &display_map))
         }
         (false, true) => {
-            // Edge case: system-only recording. Same as mic-only but on
-            // the other stream. Numbered labels.
-            let Some(wav) = sys_wav.clone() else {
-                eprintln!("diarize: sys chunks present but sys_full.wav missing, skipping");
-                emit_error(
-                    &app,
-                    Some(&note_id),
-                    "Diarization unavailable: the recording sidecar didn't write the full audio file. Transcript saved without speaker labels.",
-                );
-                return Ok(());
+            // Edge case: system-only recording. Same shape as mic-only;
+            // same three failure modes drop to the single-speaker fallback.
+            let single_speaker_fallback = || -> Box<Splitter> {
+                Box::new(|c: &ChunkRecord| single_piece(c, Some("Speaker 1".to_string())))
             };
-            let segments = diarize::diarize_file(&app, &wav, expected_speakers, engine, thresholds).await?;
-            write_diagnostics_json(&app, &note_id, engine, "sys", &segments, &chunks, &thresholds).await;
-            if segments.is_empty() {
-                eprintln!("diarize: no segments returned for sys stream, leaving transcript untagged");
-                return Ok(());
+            match sys_wav.clone() {
+                None => {
+                    eprintln!("diarize: sys chunks present but sys_full.wav missing, falling back to single-speaker labels");
+                    emit_error(
+                        &app,
+                        Some(&note_id),
+                        "Diarization unavailable: the recording sidecar didn't write the full audio file. All speech grouped under Speaker 1.",
+                    );
+                    single_speaker_fallback()
+                }
+                Some(wav) => match diarize::diarize_file(&app, &wav, expected_speakers, engine, thresholds).await {
+                    Err(e) => {
+                        eprintln!("diarize: sys diarize failed ({e}), falling back to single-speaker labels");
+                        emit_error(
+                            &app,
+                            Some(&note_id),
+                            &format!("Diarization failed ({e}); all speech grouped under Speaker 1."),
+                        );
+                        single_speaker_fallback()
+                    }
+                    Ok(segments) if segments.is_empty() => {
+                        eprintln!("diarize: no segments returned for sys stream, falling back to single-speaker labels");
+                        emit_error(
+                            &app,
+                            Some(&note_id),
+                            "Diarization found no distinct speakers; all speech grouped under Speaker 1.",
+                        );
+                        single_speaker_fallback()
+                    }
+                    Ok(segments) => {
+                        write_diagnostics_json(&app, &note_id, engine, "sys", &segments, &chunks, &thresholds).await;
+                        let display_map = build_display_map(&chunks, &segments, ChunkSource::Sys);
+                        Box::new(move |c: &ChunkRecord| split_by_segments(c, &segments, &display_map))
+                    }
+                },
             }
-            let display_map = build_display_map(&chunks, &segments, ChunkSource::Sys);
-            Box::new(move |c: &ChunkRecord| split_by_segments(c, &segments, &display_map))
         }
         (true, true) => {
             // Remote/hybrid call: mic = "You" by channel attribution; the
