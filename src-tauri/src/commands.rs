@@ -1334,19 +1334,15 @@ fn local_model_path(app: &AppHandle, language: &str) -> Result<PathBuf, String> 
     Ok(dir.join(local_whisper::default_model().filename))
 }
 
-/// Read the active STT provider config. Migrates from the legacy flat
-/// settings keys (`transcribe_provider`, `transcribe_model`,
-/// `local_whisper_model`, `whisper_preset`, `local_whisper_use_gpu`) on
-/// first read, then writes the new `transcribe_config` JSON back so
-/// subsequent reads use the new shape directly.
+/// Read the active STT provider config from the legacy flat settings keys
+/// (`transcribe_provider`, `transcribe_model`, `local_whisper_model`,
+/// `whisper_preset`, `local_whisper_use_gpu`). Always reconstructs from
+/// legacy keys so settings-UI writes (which still target legacy keys in
+/// Phase 1) are reflected immediately. Phase 2 will move the settings UI
+/// to write `ProviderConfig` directly and this function will prefer the
+/// cached form.
 fn read_provider_config(state: &State<AppState>) -> anyhow::Result<crate::stt::ProviderConfig> {
     let conn = state.db.lock();
-    if let Some(json) = db::get_setting(&conn, "transcribe_config")? {
-        if let Ok(cfg) = serde_json::from_str::<crate::stt::ProviderConfig>(&json) {
-            return Ok(cfg);
-        }
-        // Corrupted JSON in the new key — fall through to legacy reconstruction.
-    }
     let provider = db::get_setting(&conn, "transcribe_provider")?;
     let model = db::get_setting(&conn, "transcribe_model")?;
     let whisper_model = db::get_setting(&conn, "local_whisper_model")?;
@@ -1357,16 +1353,13 @@ fn read_provider_config(state: &State<AppState>) -> anyhow::Result<crate::stt::P
             "false" => Some(false),
             _ => None,
         });
-    let cfg = crate::stt::from_legacy_settings(
+    Ok(crate::stt::from_legacy_settings(
         provider.as_deref(),
         model.as_deref(),
         whisper_model.as_deref(),
         whisper_preset.as_deref(),
         whisper_use_gpu,
-    );
-    let json = serde_json::to_string(&cfg)?;
-    db::set_setting(&conn, "transcribe_config", &json)?;
-    Ok(cfg)
+    ))
 }
 
 #[derive(serde::Serialize)]
@@ -3440,49 +3433,40 @@ async fn transcribe_chunk(
     path: PathBuf,
     start_ms: u64,
 ) -> anyhow::Result<()> {
-    let cfg = {
+    // Resolve dispatch-time data: provider config (migrated from legacy keys
+    // on first read), per-note-or-global language, custom vocabulary, and
+    // the API key (Keychain — kept outside the DB lock; local providers
+    // don't need it).
+    let provider_cfg = {
         let state: State<AppState> = app.state();
-        let (provider, language, openai_model, whisper_preset, vocabulary) = {
-            let conn = state.db.lock();
-            let provider = db::get_setting(&conn, "transcribe_provider")?
-                .unwrap_or_else(|| DEFAULT_TRANSCRIBE_PROVIDER.to_string());
-            // Per-note language wins over the global. Empty (pre-feature notes
-            // and the "use default" sentinel) falls back to the global setting.
-            let global_language = db::get_setting(&conn, "language")?
-                .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
-            let note_language = db::get_note(&conn, &note_id)
-                .map(|n| n.language)
-                .unwrap_or_default();
-            let language = if note_language.trim().is_empty() {
-                global_language
-            } else {
-                note_language
-            };
-            let openai_model = db::get_setting(&conn, "transcribe_model")?
-                .unwrap_or_else(|| DEFAULT_TRANSCRIBE_MODEL.to_string());
-            let whisper_preset = db::get_setting(&conn, "whisper_preset")?
-                .unwrap_or_else(|| DEFAULT_WHISPER_PRESET.to_string());
-            let vocabulary = db::get_setting(&conn, "custom_vocabulary")?
-                .unwrap_or_default();
-            (provider, language, openai_model, whisper_preset, vocabulary)
+        read_provider_config(&state)?
+    };
+    let (language, vocabulary) = {
+        let state: State<AppState> = app.state();
+        let conn = state.db.lock();
+        let global_language = db::get_setting(&conn, "language")?
+            .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
+        let note_language = db::get_note(&conn, &note_id)
+            .map(|n| n.language)
+            .unwrap_or_default();
+        let language = if note_language.trim().is_empty() {
+            global_language
+        } else {
+            note_language
         };
-        // Read the API key OUTSIDE the DB lock — keychain access is a
-        // synchronous Security framework call and shouldn't be sequenced
-        // behind the DB mutex. Cloud providers need a key; local Whisper
-        // does not.
-        let api_key = match provider.as_str() {
-            "local" => String::new(),
-            _ => read_openai_api_key(&state)
-                .map_err(|e| anyhow::anyhow!("{e}"))?
-                .ok_or_else(|| anyhow::anyhow!("no OpenAI API key"))?,
-        };
-        TranscribeCfg {
-            provider,
-            api_key,
-            language,
-            openai_model,
-            whisper_preset,
-            vocabulary,
+        let vocabulary = db::get_setting(&conn, "custom_vocabulary")?
+            .unwrap_or_default();
+        (language, vocabulary)
+    };
+    let api_key = match provider_cfg.provider_id() {
+        "local" => None,
+        _ => {
+            let state: State<AppState> = app.state();
+            Some(
+                read_openai_api_key(&state)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("no OpenAI API key"))?,
+            )
         }
     };
 
@@ -3538,55 +3522,43 @@ async fn transcribe_chunk(
         };
         trail.as_prompt()
     };
-    let prompt = build_initial_prompt(&cfg.vocabulary, trail_snapshot);
+    let prompt = build_initial_prompt(&vocabulary, trail_snapshot);
 
-    // Both providers feed the same `Word` shape downstream so the timeline
-    // serialiser can rebase chunk-relative ms onto the playback clock the
-    // same way regardless of source. OpenAI returns words only for
-    // `whisper-1` (verbose_json + timestamp_granularities=word); the
-    // gpt-4o-transcribe family returns plain text and the timeline falls
-    // back to chunk-level highlight for those chunks.
-    let (text, words) = match cfg.provider.as_str() {
-        "local" => {
-            let model_path = local_model_path(&app, &cfg.language)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            let (shared, use_gpu) = {
-                let state: State<AppState> = app.state();
-                (state.whisper.clone(), local_whisper_use_gpu_setting(&state))
-            };
-            let preset = local_whisper::Preset::from_setting(&cfg.whisper_preset);
-            local_whisper::transcribe_file_with_words(
-                shared,
-                model_path,
-                use_gpu,
-                &cfg.language,
-                prompt.as_deref(),
-                preset,
-                &path,
-            )
-            .await?
-        }
-        _ => {
-            let (text, ow) = openai::transcribe_file(
-                &cfg.api_key,
-                &cfg.openai_model,
-                Some(&cfg.language),
-                prompt.as_deref(),
-                &path,
-            )
-            .await?;
-            let words: Vec<local_whisper::Word> = ow
-                .into_iter()
-                .map(|w| local_whisper::Word {
-                    text: w.text,
-                    start_ms: w.start_ms,
-                    end_ms: w.end_ms,
-                })
-                .collect();
-            (text, words)
-        }
+    // Build the right STT adapter for this chunk. Local Whisper needs
+    // runtime state (shared model context, resolved model file path, GPU
+    // flag) that can't live in `ProviderConfig`; we resolve it here and
+    // pass it to the registry. Both providers feed the same `Word` shape
+    // downstream so the timeline serialiser can rebase chunk-relative ms
+    // onto the playback clock the same way regardless of source.
+    let local_deps = if matches!(provider_cfg, crate::stt::ProviderConfig::Local(_)) {
+        let model_path = local_model_path(&app, &language)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let (shared, use_gpu) = {
+            let state: State<AppState> = app.state();
+            (state.whisper.clone(), local_whisper_use_gpu_setting(&state))
+        };
+        Some(crate::stt::LocalDeps { shared, model_path, use_gpu })
+    } else {
+        None
     };
-    if is_likely_hallucination(&text, &cfg.language) {
+    let adapter = crate::stt::build_adapter(&provider_cfg, local_deps);
+    let ctx = crate::stt::TranscribeCtx {
+        model: provider_cfg.model(),
+        language: &language,
+        initial_prompt: prompt.as_deref(),
+        api_key: api_key.as_deref(),
+        base_url: provider_cfg.base_url(),
+    };
+    let crate::stt::TranscribeResult { text, words } = adapter.transcribe(ctx, &path).await?;
+    let words: Vec<local_whisper::Word> = words
+        .into_iter()
+        .map(|w| local_whisper::Word {
+            text: w.text,
+            start_ms: w.start_ms,
+            end_ms: w.end_ms,
+        })
+        .collect();
+    if is_likely_hallucination(&text, &language) {
         return Ok(());
     }
     // Drop chunks dominated by N-gram repetition (Whisper collapse). Letting
@@ -3732,15 +3704,6 @@ async fn transcribe_chunk(
         },
     );
     Ok(())
-}
-
-struct TranscribeCfg {
-    provider: String,
-    api_key: String,
-    language: String,
-    openai_model: String,
-    whisper_preset: String,
-    vocabulary: String,
 }
 
 // Resolved provider for a single summary call. Both cloud OpenAI and any

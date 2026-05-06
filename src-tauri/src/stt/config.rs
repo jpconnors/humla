@@ -70,7 +70,7 @@ pub fn from_legacy_settings(
             use_gpu: whisper_use_gpu.unwrap_or(true),
         }),
         _ => ProviderConfig::OpenAi(OpenAiConfig {
-            model: transcribe_model.unwrap_or("gpt-4o-transcribe").to_string(),
+            model: transcribe_model.unwrap_or("whisper-1").to_string(),
             base_url: None,
         }),
     }
@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(
             cfg,
             ProviderConfig::OpenAi(OpenAiConfig {
-                model: "gpt-4o-transcribe".to_string(),
+                model: "whisper-1".to_string(),
                 base_url: None,
             })
         );
