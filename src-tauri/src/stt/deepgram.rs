@@ -98,17 +98,23 @@ impl BatchSttAdapter for DeepgramAdapter {
         if ctx.language != "auto" {
             req = req.query(&[("language", ctx.language)]);
         }
-        // Deepgram's `keywords` is a per-token probability boost, NOT a
-        // continuation primer. Feeding it transcript trail text would
-        // bias decoding toward whatever was said before, which is
+        // Deepgram's vocabulary biasing is a per-token probability boost,
+        // NOT a continuation primer. Feeding it transcript trail text
+        // would bias decoding toward whatever was said before, which is
         // exactly the wrong signal for the next chunk. We deliberately
         // ignore ctx.prior_context here.
         //
-        // Format: `keywords=Term:1.5` — intensifier 1.5 is a measured
-        // boost. Higher values cause phonetic over-recognition (a quiet
-        // phoneme that *kind of* sounds like "Humla" gets transcribed
-        // as "Humla"); lower values are imperceptible. Deepgram caps at
-        // 100 entries.
+        // Two parameter shapes by model:
+        //   nova-3       → `keyterm=Term` (no intensifier; Nova-3
+        //                  rejects `keywords` outright with 400
+        //                  INVALID_QUERY_PARAMETER).
+        //   other models → `keywords=Term:1.5` (intensifier 1.5 — higher
+        //                  causes phonetic over-recognition, lower is
+        //                  imperceptible).
+        //
+        // Deepgram caps at 100 entries either way.
+        let use_keyterm = ctx.model.starts_with("nova-3");
+        let param_name = if use_keyterm { "keyterm" } else { "keywords" };
         let mut keyword_count = 0usize;
         for term in ctx.bias_terms.iter() {
             if keyword_count >= 100 {
@@ -116,7 +122,12 @@ impl BatchSttAdapter for DeepgramAdapter {
             }
             let cleaned = term.trim_matches(|c: char| !c.is_alphanumeric());
             if cleaned.len() >= 3 {
-                req = req.query(&[("keywords", &format!("{cleaned}:1.5"))]);
+                let value = if use_keyterm {
+                    cleaned.to_string()
+                } else {
+                    format!("{cleaned}:1.5")
+                };
+                req = req.query(&[(param_name, &value)]);
                 keyword_count += 1;
             }
         }
