@@ -8,6 +8,7 @@ export function RecordingBar({ noteId }: { noteId: string }) {
   const status = useRecordingStore((s) => s.status);
   const isThisNote = status.noteId === noteId;
   const phase = isThisNote ? status.phase : "idle";
+  const isSummarizing = useRecordingStore((s) => !!s.summarizing[noteId]);
   const transcript = useNotesStore((s) => s.notes.find((n) => n.id === noteId)?.transcript ?? "");
   const hasTranscript = transcript.trim().length > 0;
   const diag = useRecordingStore((s) => s.diag);
@@ -98,7 +99,7 @@ export function RecordingBar({ noteId }: { noteId: string }) {
       {phase === "starting" && <BusyPill label="Starting" />}
       {phase === "stopping" && <BusyPill label="Stopping" />}
       {phase === "diarizing" && <BusyPill label="Diarizing" />}
-      {phase === "summarizing" && <BusyPill label="Summarizing" />}
+      {isSummarizing && <BusyPill label="Summarizing" />}
 
       {(phase === "recording" || phase === "paused") && (
         <div

@@ -230,10 +230,11 @@ export type PermissionsStatus = {
 export type TranscriptEvent = { noteId: string; text: string };
 export type SummaryEvent = { noteId: string; summary: string };
 export type StreamDeltaEvent = { noteId: string; delta: string };
-export type RecordingPhase = "idle" | "starting" | "recording" | "paused" | "stopping" | "diarizing" | "summarizing";
+export type RecordingPhase = "idle" | "starting" | "recording" | "paused" | "stopping" | "diarizing";
 export type SummaryProvider = "openai" | "local";
 export type RecordingStatus = { noteId: string | null; phase: RecordingPhase };
 export type RecordingError = { noteId: string | null; message: string };
+export type SummaryStatus = { noteId: string; active: boolean };
 export type RecordingDiagnostic = {
   noteId: string;
   micFrames: number;
@@ -260,6 +261,9 @@ export function onSummaryContentDelta(cb: (e: StreamDeltaEvent) => void): Promis
 }
 export function onRecordingStatus(cb: (e: RecordingStatus) => void): Promise<UnlistenFn> {
   return listen<RecordingStatus>("recording_status", (e) => cb(e.payload));
+}
+export function onSummaryStatus(cb: (e: SummaryStatus) => void): Promise<UnlistenFn> {
+  return listen<SummaryStatus>("summary_status", (e) => cb(e.payload));
 }
 export function onRecordingError(cb: (e: RecordingError) => void): Promise<UnlistenFn> {
   return listen<RecordingError>("recording_error", (e) => cb(e.payload));

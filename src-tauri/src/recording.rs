@@ -196,7 +196,6 @@ pub enum Phase {
     Paused,
     Stopping,
     Diarizing,
-    Summarizing,
 }
 
 #[derive(Clone, Serialize)]
@@ -211,6 +210,19 @@ pub struct TranscriptPayload {
 pub struct SummaryPayload {
     pub note_id: String,
     pub summary: String,
+}
+
+/// Per-note summary lifecycle. Lives on its own channel
+/// (`summary_status`) so summarising note B doesn't clobber the
+/// `recording_status` slot while note A is recording — that was the
+/// failure mode pre-v0.19.3 when summary used the same channel and
+/// emitted `note_id: None, phase: Idle` on completion, blanking the
+/// real recording state.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryStatusPayload {
+    pub note_id: String,
+    pub active: bool,
 }
 
 #[derive(Clone, Serialize)]

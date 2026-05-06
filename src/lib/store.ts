@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { ipc, onRecordingDiagnostic, onRecordingError, onRecordingStatus, onSummary, onTranscript, onTranscriptReplaced, type Folder, type Note, type RecordingDiagnostic, type RecordingStatus } from "./ipc";
+import { ipc, onRecordingDiagnostic, onRecordingError, onRecordingStatus, onSummary, onSummaryStatus, onTranscript, onTranscriptReplaced, type Folder, type Note, type RecordingDiagnostic, type RecordingStatus } from "./ipc";
 
 type NotesState = {
   notes: Note[];
@@ -68,6 +68,12 @@ export type Flash = { id: number; message: string };
 type RecordingState = {
   status: RecordingStatus;
   setStatus: (s: RecordingStatus) => void;
+  // Per-note "summary in flight" flags. Lives separately from `status` so
+  // summarising note B can't blank the recording state of note A — those
+  // are independent lifecycles. Keyed by noteId; absent or false means no
+  // summary running for that note.
+  summarizing: Record<string, boolean>;
+  setSummarizing: (noteId: string, active: boolean) => void;
   errors: { id: number; noteId: string | null; message: string }[];
   pushError: (e: { noteId: string | null; message: string }) => void;
   dismissError: (id: number) => void;
@@ -84,6 +90,14 @@ let flashIdSeq = 0;
 export const useRecordingStore = create<RecordingState>((set, get) => ({
   status: { noteId: null, phase: "idle" },
   setStatus: (status) => set({ status }),
+  summarizing: {},
+  setSummarizing: (noteId, active) =>
+    set((s) => {
+      const next = { ...s.summarizing };
+      if (active) next[noteId] = true;
+      else delete next[noteId];
+      return { summarizing: next };
+    }),
   errors: [],
   pushError: (e) => {
     // Dedupe: if the most recent error has the same message and noteId,
@@ -124,6 +138,9 @@ export function bindBackendListeners() {
   onRecordingStatus((s) => {
     useRecordingStore.getState().setStatus(s);
     if (s.phase === "idle") useRecordingStore.getState().setDiag(null);
+  });
+  onSummaryStatus(({ noteId, active }) => {
+    useRecordingStore.getState().setSummarizing(noteId, active);
   });
   onRecordingError(({ noteId, message }) => useRecordingStore.getState().pushError({ noteId, message }));
   onRecordingDiagnostic((d) => useRecordingStore.getState().setDiag(d));

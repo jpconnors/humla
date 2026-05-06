@@ -126,13 +126,16 @@ export function Note() {
   const isLocalProvider = effectiveProvider === "local";
 
   const recPhase = useRecordingStore((s) => s.status);
+  // Per-note summary state lives on its own channel (`summary_status`)
+  // so summarising one note can't clobber another note's recording
+  // state in the shared `recording_status` slot.
+  const isSummarizing = useRecordingStore((s) => !!draft && !!s.summarizing[draft.id]);
   const isThisNoteActive = !!draft && recPhase.noteId === draft.id;
   const isRecording = isThisNoteActive && recPhase.phase === "recording";
   const isPaused = isThisNoteActive && recPhase.phase === "paused";
   const isStarting = isThisNoteActive && recPhase.phase === "starting";
   const isStopping = isThisNoteActive && recPhase.phase === "stopping";
   const isDiarizing = isThisNoteActive && recPhase.phase === "diarizing";
-  const isSummarizing = isThisNoteActive && recPhase.phase === "summarizing";
 
   // Subscribe once per note id. Only append a delta if it belongs to this
   // note — defensive in case multiple summary calls are interleaved.

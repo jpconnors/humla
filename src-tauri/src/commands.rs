@@ -5,7 +5,7 @@ use crate::openai;
 use crate::local_whisper;
 use crate::presets;
 use crate::wav;
-use crate::recording::{ChunkRecord, ChunkSource, DiagnosticPayload, ErrorPayload, Inflight, Phase, RecordingStatus, SidecarEvent, StreamDeltaPayload, SummaryPayload, TranscriptPayload};
+use crate::recording::{ChunkRecord, ChunkSource, DiagnosticPayload, ErrorPayload, Inflight, Phase, RecordingStatus, SidecarEvent, StreamDeltaPayload, SummaryPayload, SummaryStatusPayload, TranscriptPayload};
 use crate::AppState;
 use futures_util::StreamExt;
 use std::path::PathBuf;
@@ -1112,12 +1112,27 @@ async fn write_diagnostics_json(
     }
 }
 
+/// Snapshot of the session-derived data the post-stop chain needs.
+/// Captured in `recording_stop` *after* the reader thread finishes (so
+/// chunk_log and the full-WAV paths are stable) and moved into the
+/// spawned task. This decouples the post-stop chain from
+/// `state.recording`, so a new recording starting before diarization
+/// finishes can't make the in-flight task see the next session's
+/// chunks or WAV paths.
+#[derive(Clone)]
+struct PostStopSnapshot {
+    mic_wav: Option<PathBuf>,
+    sys_wav: Option<PathBuf>,
+    chunks: Vec<ChunkRecord>,
+    transcript_at_start: String,
+}
+
 /// Copy the temp-dir full WAVs to a permanent location keyed by
 /// note_id when the user has opted into audio retention. Called from
 /// the post-stop chain *before* diarize_and_apply consumes and deletes
 /// the temp files via cleanup_full_wav. Best-effort: individual copy
 /// failures log and proceed.
-async fn maybe_keep_audio(app: &AppHandle, note_id: &str) {
+async fn maybe_keep_audio(app: &AppHandle, note_id: &str, snapshot: &PostStopSnapshot) {
     let state: State<AppState> = app.state();
     let keep = {
         let conn = state.db.lock();
@@ -1129,12 +1144,8 @@ async fn maybe_keep_audio(app: &AppHandle, note_id: &str) {
     if keep != "true" {
         return;
     }
-    let (mic_wav, sys_wav) = {
-        let session = state.recording.lock();
-        let mic = session.mic_full_wav_path.lock().clone();
-        let sys = session.sys_full_wav_path.lock().clone();
-        (mic, sys)
-    };
+    let mic_wav = snapshot.mic_wav.clone();
+    let sys_wav = snapshot.sys_wav.clone();
     let Ok(app_dir) = app.path().app_data_dir() else {
         eprintln!("keep_audio: app_data_dir unavailable");
         return;
@@ -1865,6 +1876,21 @@ pub async fn recording_stop(
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), r).await;
     }
 
+    // Snapshot every piece of session-derived state the post-stop chain
+    // needs, NOW — before spawning the background task. Reading from
+    // `state.recording` inside the spawned task would race with a new
+    // `recording_start` (the user can hit ⌘R immediately) and feed the
+    // diarizer the next session's chunks or paths.
+    let post_stop = {
+        let s = state.recording.lock();
+        let mic_wav = s.mic_full_wav_path.lock().clone();
+        let sys_wav = s.sys_full_wav_path.lock().clone();
+        let chunks = s.chunk_log.lock().clone();
+        let transcript_at_start = s.transcript_at_start.lock().clone();
+        drop(s);
+        PostStopSnapshot { mic_wav, sys_wav, chunks, transcript_at_start }
+    };
+
     // Spawn the post-stop processing chain in the background:
     //   Stopping → Diarizing → Idle
     // Apply chunk-level speaker labels to the live transcript and write
@@ -1930,9 +1956,9 @@ pub async fn recording_stop(
         // on. diarize_and_apply calls cleanup_full_wav on the temp paths
         // after it's done with them, so retention has to happen before
         // the diarize step consumes the files.
-        maybe_keep_audio(&app_for_post, &note_for_post).await;
+        maybe_keep_audio(&app_for_post, &note_for_post, &post_stop).await;
 
-        if let Err(e) = diarize_and_apply(app_for_post.clone(), note_for_post.clone()).await {
+        if let Err(e) = diarize_and_apply(app_for_post.clone(), note_for_post.clone(), post_stop).await {
             eprintln!("diarize_and_apply: {e}");
             emit_error(
                 &app_for_post,
@@ -1973,19 +1999,24 @@ pub async fn recording_stop(
 /// halves don't collide IDs (`You:` is a fixed label and isn't offset).
 /// No-ops gracefully when the diarize model isn't downloaded, when no
 /// chunks were captured, or when both streams produced nothing.
-async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()> {
-    // Pull session state with cloning so we can drop the parking_lot
-    // guards before the long await on the sidecar. Also read the per-note
-    // expected_speakers hint here while we're in the DB — passing the
-    // resolved value forward keeps the long-await section free of locks.
-    let (mic_wav, sys_wav, chunks, snapshot, expected_speakers, engine, thresholds) = {
+async fn diarize_and_apply(
+    app: AppHandle,
+    note_id: String,
+    post_stop: PostStopSnapshot,
+) -> anyhow::Result<()> {
+    // Per-session state arrives via `post_stop`, captured in
+    // `recording_stop` once the reader thread finished writing to the
+    // session. Reading from `state.recording` here would race with a new
+    // recording — the user can hit ⌘R again before this task lands.
+    // The DB-derived bits (engine, thresholds, expected_speakers hint)
+    // still come from the live state because they're per-note settings,
+    // not per-session.
+    let mic_wav = post_stop.mic_wav.clone();
+    let sys_wav = post_stop.sys_wav.clone();
+    let chunks = post_stop.chunks.clone();
+    let snapshot = post_stop.transcript_at_start.clone();
+    let (expected_speakers, engine, thresholds) = {
         let state: State<AppState> = app.state();
-        let session = state.recording.lock();
-        let mic = session.mic_full_wav_path.lock().clone();
-        let sys = session.sys_full_wav_path.lock().clone();
-        let log = session.chunk_log.lock().clone();
-        let snap = session.transcript_at_start.lock().clone();
-        drop(session);
         let eng = active_diarize_engine(&state);
         let thr = read_diarize_thresholds(&state);
         let conn = state.db.lock();
@@ -1993,7 +2024,7 @@ async fn diarize_and_apply(app: AppHandle, note_id: String) -> anyhow::Result<()
             .ok()
             .and_then(|n| n.expected_speakers)
             .filter(|n| *n > 0);
-        (mic, sys, log, snap, hint, eng, thr)
+        (hint, eng, thr)
     };
     if chunks.is_empty() {
         eprintln!("diarize: no chunks captured, skipping");
@@ -3233,11 +3264,14 @@ fn resolve_provider(
 #[tauri::command]
 pub async fn summarize_note(app: AppHandle, note_id: String) -> Result<(), String> {
     eprintln!("[llm] summarize_note invoked for note={note_id}");
-    // Reflect the in-flight summary in the recording status so the UI can
-    // show a spinner. Use the existing Summarizing phase.
-    emit_status(&app, Some(&note_id), Phase::Summarizing);
+    // Per-note `summary_status` channel keeps the summary spinner from
+    // touching `recording_status`. Summarising note B while note A
+    // records used to wipe A's recording state on completion (`note_id:
+    // None, Phase::Idle` on the shared channel); the dedicated event
+    // makes the two lifecycles independent.
+    emit_summary_status(&app, &note_id, true);
     let result = run_summary(app.clone(), note_id.clone()).await;
-    emit_status(&app, None, Phase::Idle);
+    emit_summary_status(&app, &note_id, false);
     match &result {
         Ok(()) => eprintln!("[llm] summarize_note succeeded"),
         Err(e) => eprintln!("[llm] summarize_note failed: {e:#}"),
@@ -3360,6 +3394,13 @@ fn emit_status(app: &AppHandle, note_id: Option<&str>, phase: Phase) {
     let _ = app.emit("recording_status", RecordingStatus {
         note_id: note_id.map(|s| s.to_string()),
         phase,
+    });
+}
+
+fn emit_summary_status(app: &AppHandle, note_id: &str, active: bool) {
+    let _ = app.emit("summary_status", SummaryStatusPayload {
+        note_id: note_id.to_string(),
+        active,
     });
 }
 
