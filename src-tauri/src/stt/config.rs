@@ -13,6 +13,10 @@ pub enum ProviderConfig {
     OpenAi(OpenAiConfig),
     #[serde(rename = "local")]
     Local(LocalWhisperConfig),
+    #[serde(rename = "deepgram")]
+    Deepgram(DeepgramConfig),
+    #[serde(rename = "groq")]
+    Groq(GroqConfig),
 }
 
 impl ProviderConfig {
@@ -20,6 +24,8 @@ impl ProviderConfig {
         match self {
             ProviderConfig::OpenAi(_) => "openai",
             ProviderConfig::Local(_) => "local",
+            ProviderConfig::Deepgram(_) => "deepgram",
+            ProviderConfig::Groq(_) => "groq",
         }
     }
 
@@ -27,6 +33,8 @@ impl ProviderConfig {
         match self {
             ProviderConfig::OpenAi(c) => &c.model,
             ProviderConfig::Local(c) => &c.model_id,
+            ProviderConfig::Deepgram(c) => &c.model,
+            ProviderConfig::Groq(c) => &c.model,
         }
     }
 
@@ -34,6 +42,11 @@ impl ProviderConfig {
         match self {
             ProviderConfig::OpenAi(c) => c.base_url.as_deref(),
             ProviderConfig::Local(_) => None,
+            ProviderConfig::Deepgram(c) => c.base_url.as_deref(),
+            // Groq's URL is fixed; if a user wanted to point at a self-
+            // hosted Groq-compat server they'd switch to the OpenAI
+            // provider with a custom base_url.
+            ProviderConfig::Groq(_) => None,
         }
     }
 }
@@ -50,6 +63,18 @@ pub struct LocalWhisperConfig {
     pub model_id: String,
     pub preset: String,
     pub use_gpu: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeepgramConfig {
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GroqConfig {
+    pub model: String,
 }
 
 /// Build a `ProviderConfig` from the legacy flat settings shape. Used at
@@ -141,6 +166,30 @@ mod tests {
             }
             _ => panic!("expected Local"),
         }
+    }
+
+    #[test]
+    fn deepgram_round_trips_through_json() {
+        let cfg = ProviderConfig::Deepgram(DeepgramConfig {
+            model: "nova-3".to_string(),
+            base_url: None,
+        });
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: ProviderConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, back);
+        assert!(json.contains(r#""provider":"deepgram""#));
+        assert_eq!(cfg.model(), "nova-3");
+    }
+
+    #[test]
+    fn groq_round_trips_through_json() {
+        let cfg = ProviderConfig::Groq(GroqConfig {
+            model: "whisper-large-v3-turbo".to_string(),
+        });
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: ProviderConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, back);
+        assert!(json.contains(r#""provider":"groq""#));
     }
 
     #[test]

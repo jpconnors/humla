@@ -12,7 +12,8 @@ use std::path::PathBuf;
 pub use adapter::{BatchSttAdapter, TranscribeCtx, TranscribeResult, Word};
 pub use auth::Auth;
 pub use config::{
-    from_legacy_settings, LocalWhisperConfig, OpenAiConfig, ProviderConfig,
+    from_legacy_settings, DeepgramConfig, GroqConfig, LocalWhisperConfig, OpenAiConfig,
+    ProviderConfig,
 };
 pub use keychain::{
     keychain_account_for, new_cache, requires_api_key, ApiKeyCache, KEYCHAIN_SERVICE,
@@ -55,6 +56,9 @@ pub fn build_adapter(
                 local_whisper::Preset::from_setting(&local_cfg.preset),
             ))
         }
+        // Adapters land in Tasks 5 (Groq) and 6 (Deepgram).
+        ProviderConfig::Deepgram(_) => unreachable!("DeepgramAdapter lands in Phase 2 Task 6"),
+        ProviderConfig::Groq(_) => unreachable!("GroqAdapter lands in Phase 2 Task 5"),
     }
 }
 
