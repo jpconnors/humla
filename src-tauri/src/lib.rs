@@ -23,6 +23,15 @@ pub struct AppState {
     // mean each chunk's initial_prompt sees the *committed* output of every
     // prior chunk in this session.
     pub transcribe_gate: Arc<tokio::sync::Mutex<()>>,
+    // Cached result of the last Keychain read for the OpenAI API key.
+    //   None             = never read; next call hits Keychain
+    //   Some(None)       = read, no key stored
+    //   Some(Some(key))  = read, key cached
+    // Populated lazily by `read_openai_api_key` and invalidated by
+    // `set_openai_api_key` so settings UI writes take effect immediately.
+    // Without this, every Settings open / record start / summarize would
+    // trigger a separate macOS Keychain access prompt on first run.
+    pub api_key_cache: Arc<Mutex<Option<Option<String>>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -90,6 +99,7 @@ pub fn run() {
                 recording: Arc::new(Mutex::new(recording::RecordingSession::default())),
                 whisper: local_whisper::new_shared(),
                 transcribe_gate: Arc::new(tokio::sync::Mutex::new(())),
+                api_key_cache: Arc::new(Mutex::new(None)),
             });
 
             let menu = build_menu(app.handle())?;

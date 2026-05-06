@@ -80,17 +80,29 @@ const KEYCHAIN_ACCOUNT_OPENAI: &str = "openai_api_key";
 /// when no key is stored. On the first call after upgrading from a
 /// pre-Keychain build, migrates the legacy plaintext row from SQLite
 /// into the Keychain transparently and blanks the SQLite copy.
+///
+/// The result is cached on `AppState` so subsequent reads (Settings UI
+/// open + record start + summarize) don't each trigger a separate
+/// macOS Keychain access prompt. Cache is invalidated by
+/// `set_openai_api_key` so user-driven changes take effect immediately.
 fn read_openai_api_key(state: &State<AppState>) -> Result<Option<String>, String> {
+    if let Some(cached) = state.api_key_cache.lock().clone() {
+        return Ok(cached);
+    }
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT_OPENAI)
         .map_err(|e| format!("keychain entry: {e}"))?;
-    match entry.get_password() {
+    let result = match entry.get_password() {
         Ok(s) => {
             let t = s.trim().to_string();
             Ok(if t.is_empty() { None } else { Some(t) })
         }
         Err(keyring::Error::NoEntry) => migrate_legacy_api_key(state, &entry),
         Err(e) => Err(format!("keychain read: {e}")),
+    };
+    if let Ok(value) = &result {
+        *state.api_key_cache.lock() = Some(value.clone());
     }
+    result
 }
 
 fn migrate_legacy_api_key(
@@ -115,7 +127,9 @@ fn migrate_legacy_api_key(
 
 /// Write the OpenAI API key to the Keychain. Empty input deletes the
 /// entry. Always blanks the legacy SQLite row in lockstep so an old
-/// plaintext value can't outlive the new write.
+/// plaintext value can't outlive the new write. Updates the in-memory
+/// cache so `read_openai_api_key` returns the new value without a
+/// fresh Keychain prompt.
 fn set_openai_api_key(state: &State<AppState>, key: &str) -> Result<(), String> {
     let trimmed = key.trim();
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT_OPENAI)
@@ -132,6 +146,12 @@ fn set_openai_api_key(state: &State<AppState>, key: &str) -> Result<(), String> 
     }
     let conn = state.db.lock();
     let _ = db::set_setting(&conn, API_KEY, "");
+    drop(conn);
+    *state.api_key_cache.lock() = Some(if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    });
     Ok(())
 }
 
