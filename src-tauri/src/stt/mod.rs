@@ -6,6 +6,7 @@ mod config;
 mod keychain;
 mod local;
 mod openai;
+mod openai_compat;
 
 use std::path::PathBuf;
 
