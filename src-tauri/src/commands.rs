@@ -3086,37 +3086,306 @@ fn starts_lowercase(line: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Heuristic chunk-boundary merge: when one transcript line ends
-/// without a sentence terminator and the next line starts with a
-/// lowercase letter, the next line is almost certainly a continuation
-/// of the same sentence (Whisper cut a chunk mid-utterance, or the
-/// diarizer flipped speaker on a long fragment).
+/// Maximum word count for a "boundary fragment" that the diarizer
+/// likely mis-attributed across the speaker line. 1–3 words covers the
+/// real-world failure mode (Whisper emitted "...way. It" and the next
+/// chunk started "does pay off..."; or "...Brand" + "new. Hadn't done
+/// anything..."). Going wider risks moving real content between
+/// speakers.
+const BOUNDARY_FRAGMENT_MAX_WORDS: usize = 3;
+
+/// Split a transcript line into `(label_with_separator, body)`. The
+/// label part includes the leading whitespace, the label text, the
+/// `:`, and the space after it — so concatenating the two halves
+/// reproduces the original line exactly. Returns `("", line)` when
+/// there's no recognisable label prefix (defensive — production
+/// transcripts always have one, but the merge passes also run on
+/// hand-edited text).
+fn split_label_prefix(line: &str) -> (&str, &str) {
+    let trimmed = line.trim_start();
+    let leading_ws_len = line.len() - trimmed.len();
+    if let Some(colon) = trimmed.find(':') {
+        let label = &trimmed[..colon];
+        if !label.is_empty() && label.len() <= 40 && !label.contains('\n') {
+            let after_colon = &trimmed[colon + 1..];
+            let body_offset = colon + 1 + (after_colon.len() - after_colon.trim_start().len());
+            let total_offset = leading_ws_len + body_offset;
+            return (&line[..total_offset], &line[total_offset..]);
+        }
+    }
+    ("", line)
+}
+
+/// Byte offset of the *last* sentence-terminator (`.!?…`) in `s`, or
+/// `None` if there isn't one. Used to find the boundary between the
+/// last finished sentence on a line and any trailing fragment.
+/// Excludes `:;` (more often mid-clause than sentence-final) and
+/// dash variants (those signal trailing-off, not a clean sentence
+/// boundary we want to split on).
+fn last_terminator_index(s: &str) -> Option<usize> {
+    s.char_indices()
+        .filter(|(_, c)| matches!(c, '.' | '!' | '?' | '…'))
+        .map(|(i, _)| i)
+        .last()
+}
+
+/// Byte offset of the *first* sentence-terminator (`.!?…`) in `s`,
+/// or `None` if there isn't one.
+fn first_terminator_index(s: &str) -> Option<usize> {
+    s.char_indices()
+        .find(|(_, c)| matches!(c, '.' | '!' | '?' | '…'))
+        .map(|(i, _)| i)
+}
+
+/// Length in bytes of the character starting at byte index `i` in `s`.
+/// Used to step *past* a terminator character we located via
+/// `last_terminator_index` / `first_terminator_index`.
+fn char_len_at(s: &str, i: usize) -> usize {
+    s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(0)
+}
+
+/// Detect "the diarizer attributed the *next* speaker's first 1–3
+/// words to the *previous* speaker's turn" — a common Whisper-Word
+/// alignment artefact when a sentence terminator lands mid-chunk and
+/// the next sentence's opening words spill into the same chunk before
+/// the speaker change actually occurs.
 ///
-/// The two textual cues together are highly specific. Whisper at a
-/// real sentence boundary almost always emits a terminator AND
-/// capitalises the next sentence — so when neither happens, it's
-/// almost always one continuous utterance that got chopped across
-/// chunks. Earlier versions guarded with a word-count cap (≤ 8 words
-/// on either side) but that left long mid-sentence breaks intact in
-/// real recordings, which was the user-reported bug.
+/// Pattern (after stripping speaker labels):
+/// - `prev` body ends with `<sentence>. <1–3 capitalised words>`
+///   where the trailing words contain *no* terminator of their own
+///   (they're the start of a new sentence, not its end).
+/// - `next` body starts with a *lowercase* letter (the continuation
+///   that confirms those trailing words begin the same sentence).
 ///
-/// Em-dashes and en-dashes count as terminators (see `ends_sentence`)
-/// so a speaker trailing off mid-thought ("but I —") doesn't fuse
-/// into the next speaker's turn.
+/// Fix: trim the trailing words from `prev`, prepend them to `next`'s
+/// body. Speaker labels are preserved on both lines.
+fn forward_move_trailing(prev: &str, next: &str) -> Option<(String, String)> {
+    let (prev_label, prev_body) = split_label_prefix(prev);
+    let (next_label, next_body) = split_label_prefix(next);
+
+    // Bail on empty / label-only lines.
+    if prev_body.trim().is_empty() || next_body.trim().is_empty() {
+        return None;
+    }
+
+    // The trailing fragment lives after the LAST `.!?…` in prev.
+    let term_idx = last_terminator_index(prev_body)?;
+    let after_term_byte = term_idx + char_len_at(prev_body, term_idx);
+    let trailing = prev_body.get(after_term_byte..)?.trim();
+    if trailing.is_empty() {
+        return None;
+    }
+
+    let trailing_words: Vec<&str> = trailing.split_whitespace().collect();
+    if trailing_words.is_empty() || trailing_words.len() > BOUNDARY_FRAGMENT_MAX_WORDS {
+        return None;
+    }
+
+    // First trailing word must be a sentence start (capitalised). If
+    // it's lowercase, this isn't a "next-speaker's-sentence-start"
+    // pattern — the full merge below will catch it instead.
+    let first_word = *trailing_words.first()?;
+    let first_char = first_word.chars().next()?;
+    if !first_char.is_uppercase() {
+        return None;
+    }
+
+    // None of the trailing words may already contain a terminator —
+    // that would mean the trailing fragment is itself a complete
+    // sentence, which probably belongs to prev as the speaker's last
+    // word, not to next.
+    if trailing_words
+        .iter()
+        .any(|w| w.chars().any(|c| matches!(c, '.' | '!' | '?' | '…')))
+    {
+        return None;
+    }
+
+    // next must start lowercase — confirms the trailing fragment is
+    // the start of a sentence the next speaker continues.
+    if !starts_lowercase(next) {
+        return None;
+    }
+
+    // Build new prev: keep through the terminator, drop the trailing
+    // fragment.
+    let kept = prev_body
+        .get(..after_term_byte)?
+        .trim_end()
+        .to_string();
+    let new_prev = format!("{prev_label}{kept}");
+
+    // Build new next: prepend trailing fragment to existing body.
+    let trailing_joined = trailing_words.join(" ");
+    let new_next = format!("{next_label}{trailing_joined} {next_body}");
+
+    Some((new_prev, new_next))
+}
+
+/// Detect "the diarizer attributed the *previous* speaker's last 1–3
+/// words to the *next* speaker's turn" — the inverse of
+/// `forward_move_trailing`.
 ///
-/// The first line's speaker label is preserved (it owned the start of
-/// the sentence). The second line's label is dropped on merge. Lines
-/// without speaker labels pass through unchanged.
+/// Pattern (after stripping speaker labels):
+/// - `prev` body ends *without* a sentence terminator (the speaker
+///   was mid-clause when the chunk boundary fell).
+/// - `next` body starts with `<1–3 words><terminator> <more
+///   content>` — i.e. a short fragment that closes a sentence,
+///   followed by genuinely new content that's clearly the next
+///   speaker's turn.
 ///
-/// Runs after `bridge_short_interjections`, catching what the
-/// structural sandwich rule can't (e.g. a long fragment at the end of
-/// the transcript, or a borderline diarizer flip across a multi-word
-/// span).
+/// Fix: detach the leading fragment (up to and including the first
+/// terminator) from `next`, append it to `prev`. Speaker labels are
+/// preserved on both lines.
+fn backward_move_leading(prev: &str, next: &str) -> Option<(String, String)> {
+    let (prev_label, prev_body) = split_label_prefix(prev);
+    let (next_label, next_body) = split_label_prefix(next);
+
+    if prev_body.trim().is_empty() || next_body.trim().is_empty() {
+        return None;
+    }
+
+    // prev must be open (no terminator at end).
+    if ends_sentence(prev) {
+        return None;
+    }
+
+    // next's body must contain a terminator within the first 1–3
+    // words.
+    let term_idx = first_terminator_index(next_body)?;
+    let term_end = term_idx + char_len_at(next_body, term_idx);
+    let leading = next_body.get(..term_end)?.trim();
+    let trailing = next_body.get(term_end..)?.trim_start();
+
+    let leading_words: Vec<&str> = leading.split_whitespace().collect();
+    if leading_words.is_empty() || leading_words.len() > BOUNDARY_FRAGMENT_MAX_WORDS {
+        return None;
+    }
+
+    // There must be content after the terminator — otherwise we'd be
+    // stripping `next` entirely, which is what `merge_run_on_sentences`
+    // already does (and gets the speaker attribution wrong, which is
+    // why this targeted move exists).
+    if trailing.is_empty() {
+        return None;
+    }
+
+    // Build new prev: append leading fragment to existing body.
+    let new_prev = format!("{prev_label}{} {leading}", prev_body.trim_end());
+
+    // Build new next: just the trailing portion, with its label.
+    let new_next = format!("{next_label}{trailing}");
+
+    Some((new_prev, new_next))
+}
+
+/// Detect a stutter / immediate-repetition signal at a line boundary.
+///
+/// When `prev` body has format `<earlier text>... <X> <terminator>
+/// <Y>` and `next` body has format `<Z> <terminator> <rest>`, the
+/// phrase `Y Z` may form a unit. If that exact phrase already appears
+/// in `prev` *before* the trailing `Y`, the speaker stuttered or
+/// repeated themselves — `Y Z` is the second occurrence, all on the
+/// same speaker's line. That's the cue to prefer backward-move (pull
+/// `Z` back to prev) over forward-move (push `Y` forward to next).
+///
+/// Without this signal, the AMC-style case ("AMC was a young company.
+/// Brand new. Brand" + "new. Hadn't done anything...") and the "It
+/// does pay off" case look identical to the structural rules — both
+/// have a 1-word trailing in prev and a 1-word leading in next. Only
+/// the repetition check separates them.
+fn has_repetition_signal(prev: &str, next: &str) -> bool {
+    let (_, prev_body) = split_label_prefix(prev);
+    let (_, next_body) = split_label_prefix(next);
+
+    let prev_term = match last_terminator_index(prev_body) {
+        Some(i) => i,
+        None => return false,
+    };
+    let after_prev_term = prev_term + char_len_at(prev_body, prev_term);
+    let trailing = match prev_body.get(after_prev_term..) {
+        Some(t) => t.trim(),
+        None => return false,
+    };
+    if trailing.is_empty() {
+        return false;
+    }
+
+    let next_term = match first_terminator_index(next_body) {
+        Some(i) => i,
+        None => return false,
+    };
+    let leading = match next_body.get(..next_term) {
+        Some(l) => l.trim(),
+        None => return false,
+    };
+    if leading.is_empty() {
+        return false;
+    }
+
+    let search_zone = match prev_body.get(..after_prev_term) {
+        Some(z) => z.to_lowercase(),
+        None => return false,
+    };
+    let combined = format!("{trailing} {leading}").to_lowercase();
+    search_zone.contains(&combined)
+}
+
+/// Heuristic chunk-boundary cleanup. Three operations applied at
+/// every adjacent line pair, with the choice between forward and
+/// backward moves disambiguated by a repetition-signal tiebreaker:
+///
+/// 1. **Forward-move** (`forward_move_trailing`): the next speaker's
+///    sentence-opening words got attributed to the previous speaker.
+///    Trim them off prev, prepend to next.
+/// 2. **Backward-move** (`backward_move_leading`): the previous
+///    speaker's sentence-closing words got attributed to the next
+///    speaker. Trim them off next, append to prev.
+/// 3. **Full merge**: prev ends without a terminator AND next starts
+///    lowercase, but neither (1) nor (2) applied. Fuse next's body
+///    into prev (its label is dropped). Common pattern: Whisper
+///    chopped a single sentence across chunks and the diarizer
+///    flipped speaker on the second half.
+///
+/// When forward and backward both qualify, the choice is made by
+/// `has_repetition_signal`: if the trailing-of-prev + leading-of-next
+/// phrase already appears earlier in prev, the speaker repeated
+/// themselves and the words belong on prev (backward); otherwise the
+/// trailing was misattributed and the words belong on next (forward).
+///
+/// All three preserve the textual signal as the safety check —
+/// Whisper at a real speaker boundary almost always emits a
+/// terminator AND capitalises the next sentence's first word, so
+/// when neither holds the boundary is almost certainly a chunk
+/// artefact rather than a real turn change.
+///
+/// Runs after `bridge_short_interjections` (which handles same-line
+/// short interjections inside a single chunk), catching what the
+/// structural sandwich rule can't.
 fn merge_run_on_sentences(text: &str) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut merged: Vec<String> = Vec::with_capacity(lines.len());
     for line in lines {
         if let Some(prev) = merged.last_mut() {
+            let forward = forward_move_trailing(prev, line);
+            let backward = backward_move_leading(prev, line);
+            let chosen = match (forward, backward) {
+                (Some(f), Some(b)) => {
+                    if has_repetition_signal(prev, line) {
+                        Some(b)
+                    } else {
+                        Some(f)
+                    }
+                }
+                (Some(f), None) => Some(f),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+            if let Some((new_prev, new_next)) = chosen {
+                *prev = new_prev;
+                merged.push(new_next);
+                continue;
+            }
             if !ends_sentence(prev) && starts_lowercase(line) {
                 let stripped = strip_label_prefix(line);
                 prev.push(' ');
@@ -4120,16 +4389,98 @@ mod diarize_tests {
     }
 
     #[test]
-    fn merge_glues_long_substantial_fragments_when_signal_is_strong() {
-        // Real-recording case from a tester transcript: a 14-word line
-        // ends with "Not" (no terminator) and the next 11-word line
-        // starts with "quite" (lowercase). Whisper cut a chunk between
-        // "things." and "Not quite 10". An earlier word-count guard
-        // (≤ 8 either side) left this split, which was the user-
-        // reported bug. The textual signal alone is now enough.
+    fn forward_move_relocates_long_fragment_trailing_word_to_next() {
+        // Real-recording case: a 14-word line ends with "Not" (no
+        // terminator) and the next 11-word line starts with "quite"
+        // (lowercase). Whisper cut a chunk between "things." and "Not
+        // quite 10". Forward-move detaches the trailing "Not" and
+        // hands it to next as the start of next's sentence —
+        // attribution is preserved on both sides instead of fusing
+        // them into one mis-labelled line.
         let input = "Speaker 1: Like you were working probably for 10 years in a lot of different things. Not\nSpeaker 1: quite 10, but a solid six or seven years as a working actor.";
         let output = merge_run_on_sentences(input);
-        assert!(!output.contains('\n'), "expected merge: {output}");
+        assert_eq!(
+            output,
+            "Speaker 1: Like you were working probably for 10 years in a lot of different things.\nSpeaker 1: Not quite 10, but a solid six or seven years as a working actor."
+        );
+    }
+
+    #[test]
+    fn forward_move_relocates_trailing_sentence_start_to_next_speaker() {
+        // Real-recording case from a tester transcript: the next
+        // speaker's first word ("It") landed on the previous turn
+        // because Whisper's chunk boundary fell mid-sentence. The
+        // continuation ("does pay off") is lowercase, confirming
+        // "It" starts a sentence the next speaker delivers.
+        let input = "Speaker 1: starts to unravel in the perfect way. It\nSpeaker 2: does pay off. That's what's really nice.";
+        let output = merge_run_on_sentences(input);
+        assert_eq!(
+            output,
+            "Speaker 1: starts to unravel in the perfect way.\nSpeaker 2: It does pay off. That's what's really nice."
+        );
+    }
+
+    #[test]
+    fn forward_move_handles_multi_word_trailing_fragment() {
+        // 1–3 trailing capitalised words still qualify; the first must
+        // be a sentence start.
+        let input = "Speaker 1: that closes the door. So we\nSpeaker 2: can move on now.";
+        let output = merge_run_on_sentences(input);
+        assert_eq!(
+            output,
+            "Speaker 1: that closes the door.\nSpeaker 2: So we can move on now."
+        );
+    }
+
+    #[test]
+    fn forward_move_skips_when_trailing_starts_lowercase() {
+        // The trailing word "that" is lowercase — it's a continuation
+        // of the previous clause, not the start of a new sentence.
+        // Falls through to the full merge instead.
+        let input = "Speaker 1: I think that\nSpeaker 2: we should do it.";
+        let output = merge_run_on_sentences(input);
+        assert_eq!(
+            output,
+            "Speaker 1: I think that we should do it."
+        );
+    }
+
+    #[test]
+    fn backward_move_pulls_leading_sentence_close_to_prev_speaker() {
+        // Real-recording case: "AMC was a young company. Brand new.
+        // Brand" + "new. Hadn't done anything..." — the diarizer cut
+        // mid-utterance and gave "new." to the wrong speaker.
+        let input = "Speaker 1: AMC was a young company. Brand new. Brand\nSpeaker 2: new. Hadn't done anything significant yet.";
+        let output = merge_run_on_sentences(input);
+        assert_eq!(
+            output,
+            "Speaker 1: AMC was a young company. Brand new. Brand new.\nSpeaker 2: Hadn't done anything significant yet."
+        );
+    }
+
+    #[test]
+    fn backward_move_skips_when_leading_has_no_trailing_content() {
+        // If next is *just* the leading fragment (nothing after the
+        // terminator), the backward-move would empty it. Fall through
+        // to the full merge instead, which produces the cleaner
+        // single-line result.
+        let input = "Speaker 1: I think we should\nSpeaker 2: stop.";
+        let output = merge_run_on_sentences(input);
+        // Full merge fires (prev open + next lowercase): joined.
+        assert_eq!(output, "Speaker 1: I think we should stop.");
+    }
+
+    #[test]
+    fn backward_move_skips_when_leading_too_long() {
+        // 4-word leading fragment exceeds BOUNDARY_FRAGMENT_MAX_WORDS.
+        // The boundary stays put — wider moves risk shuffling real
+        // content between speakers.
+        let input = "Speaker 1: I was about to\nSpeaker 2: yes that is correct. Anyway moving on.";
+        let output = merge_run_on_sentences(input);
+        // Full merge fires (prev open + next lowercase "yes"). Acceptable
+        // fallback — at least the sentence is intact even if attribution
+        // collapses to prev.
+        assert!(output.contains("Speaker 1: I was about to yes that is correct"), "got: {output}");
     }
 
     #[test]
