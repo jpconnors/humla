@@ -3,6 +3,7 @@
 mod adapter;
 mod auth;
 mod config;
+mod keychain;
 mod local;
 mod openai;
 
@@ -12,6 +13,9 @@ pub use adapter::{BatchSttAdapter, TranscribeCtx, TranscribeResult, Word};
 pub use auth::Auth;
 pub use config::{
     from_legacy_settings, LocalWhisperConfig, OpenAiConfig, ProviderConfig,
+};
+pub use keychain::{
+    keychain_account_for, new_cache, requires_api_key, ApiKeyCache, KEYCHAIN_SERVICE,
 };
 pub use local::LocalWhisperAdapter;
 pub use openai::OpenAiAdapter;

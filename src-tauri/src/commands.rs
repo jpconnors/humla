@@ -70,37 +70,46 @@ const DEFAULT_SUMMARY_PROMPT: &str = "Du lager møtenotater fra en automatisk tr
 // DB export / backup doesn't leak the secret.
 const API_KEY: &str = "__openai_api_key__";
 
-// Keychain coordinates. Service matches the bundle id (TCC + Keychain
-// ACLs key on this); account is a stable label for the secret type so
-// we can add more secrets later without colliding.
-const KEYCHAIN_SERVICE: &str = "no.humla.app";
-const KEYCHAIN_ACCOUNT_OPENAI: &str = "openai_api_key";
-
-/// Read the OpenAI API key from the macOS Keychain. Returns Ok(None)
-/// when no key is stored. On the first call after upgrading from a
-/// pre-Keychain build, migrates the legacy plaintext row from SQLite
-/// into the Keychain transparently and blanks the SQLite copy.
+/// Read the API key for the given provider from the macOS Keychain.
+/// Returns Ok(None) if no key is stored or the provider doesn't take one
+/// (e.g. local Whisper). Cached per-provider on AppState; first call per
+/// provider per session triggers exactly one Keychain prompt.
 ///
-/// The result is cached on `AppState` so subsequent reads (Settings UI
-/// open + record start + summarize) don't each trigger a separate
-/// macOS Keychain access prompt. Cache is invalidated by
-/// `set_openai_api_key` so user-driven changes take effect immediately.
-fn read_openai_api_key(state: &State<AppState>) -> Result<Option<String>, String> {
-    if let Some(cached) = state.api_key_cache.lock().clone() {
+/// On first call for OpenAI after upgrading from a pre-Keychain build,
+/// migrates the legacy plaintext row from SQLite into the Keychain and
+/// blanks the SQLite copy. Other providers were never stored anywhere
+/// else, so they have no migration path.
+fn read_provider_api_key(
+    state: &State<AppState>,
+    provider_id: &'static str,
+) -> Result<Option<String>, String> {
+    if let Some(cached) = state.api_key_cache.lock().get(provider_id).cloned() {
         return Ok(cached);
     }
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT_OPENAI)
+    let Some(account) = crate::stt::keychain_account_for(provider_id) else {
+        return Ok(None);
+    };
+    let entry = keyring::Entry::new(crate::stt::KEYCHAIN_SERVICE, account)
         .map_err(|e| format!("keychain entry: {e}"))?;
     let result = match entry.get_password() {
         Ok(s) => {
             let t = s.trim().to_string();
             Ok(if t.is_empty() { None } else { Some(t) })
         }
-        Err(keyring::Error::NoEntry) => migrate_legacy_api_key(state, &entry),
+        Err(keyring::Error::NoEntry) => {
+            if provider_id == "openai" {
+                migrate_legacy_api_key(state, &entry)
+            } else {
+                Ok(None)
+            }
+        }
         Err(e) => Err(format!("keychain read: {e}")),
     };
     if let Ok(value) = &result {
-        *state.api_key_cache.lock() = Some(value.clone());
+        state
+            .api_key_cache
+            .lock()
+            .insert(provider_id, value.clone());
     }
     result
 }
@@ -125,14 +134,19 @@ fn migrate_legacy_api_key(
     Ok(Some(trimmed))
 }
 
-/// Write the OpenAI API key to the Keychain. Empty input deletes the
-/// entry. Always blanks the legacy SQLite row in lockstep so an old
-/// plaintext value can't outlive the new write. Updates the in-memory
-/// cache so `read_openai_api_key` returns the new value without a
-/// fresh Keychain prompt.
-fn set_openai_api_key(state: &State<AppState>, key: &str) -> Result<(), String> {
+/// Write the API key for the given provider to the macOS Keychain.
+/// Empty input deletes the entry. For OpenAI, also blanks the legacy
+/// SQLite row in lockstep. Updates the in-memory cache so subsequent
+/// reads return the new value without a fresh Keychain prompt.
+fn set_provider_api_key(
+    state: &State<AppState>,
+    provider_id: &'static str,
+    key: &str,
+) -> Result<(), String> {
     let trimmed = key.trim();
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT_OPENAI)
+    let account = crate::stt::keychain_account_for(provider_id)
+        .ok_or_else(|| format!("provider {provider_id} has no Keychain slot"))?;
+    let entry = keyring::Entry::new(crate::stt::KEYCHAIN_SERVICE, account)
         .map_err(|e| format!("keychain entry: {e}"))?;
     if trimmed.is_empty() {
         match entry.delete_credential() {
@@ -144,15 +158,26 @@ fn set_openai_api_key(state: &State<AppState>, key: &str) -> Result<(), String> 
             .set_password(trimmed)
             .map_err(|e| format!("keychain write: {e}"))?;
     }
-    let conn = state.db.lock();
-    let _ = db::set_setting(&conn, API_KEY, "");
-    drop(conn);
-    *state.api_key_cache.lock() = Some(if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    });
+    if provider_id == "openai" {
+        let conn = state.db.lock();
+        let _ = db::set_setting(&conn, API_KEY, "");
+    }
+    state.api_key_cache.lock().insert(
+        provider_id,
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
+    );
     Ok(())
+}
+
+/// Phase-1 compatibility shim. Keep existing call sites working; new
+/// sites should call `read_provider_api_key` directly.
+fn read_openai_api_key(state: &State<AppState>) -> Result<Option<String>, String> {
+    read_provider_api_key(state, "openai")
+}
+
+/// Phase-1 compatibility shim. Keep existing call sites working.
+fn set_openai_api_key(state: &State<AppState>, key: &str) -> Result<(), String> {
+    set_provider_api_key(state, "openai", key)
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String { e.to_string() }
