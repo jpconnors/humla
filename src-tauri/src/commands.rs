@@ -1334,6 +1334,41 @@ fn local_model_path(app: &AppHandle, language: &str) -> Result<PathBuf, String> 
     Ok(dir.join(local_whisper::default_model().filename))
 }
 
+/// Read the active STT provider config. Migrates from the legacy flat
+/// settings keys (`transcribe_provider`, `transcribe_model`,
+/// `local_whisper_model`, `whisper_preset`, `local_whisper_use_gpu`) on
+/// first read, then writes the new `transcribe_config` JSON back so
+/// subsequent reads use the new shape directly.
+fn read_provider_config(state: &State<AppState>) -> anyhow::Result<crate::stt::ProviderConfig> {
+    let conn = state.db.lock();
+    if let Some(json) = db::get_setting(&conn, "transcribe_config")? {
+        if let Ok(cfg) = serde_json::from_str::<crate::stt::ProviderConfig>(&json) {
+            return Ok(cfg);
+        }
+        // Corrupted JSON in the new key — fall through to legacy reconstruction.
+    }
+    let provider = db::get_setting(&conn, "transcribe_provider")?;
+    let model = db::get_setting(&conn, "transcribe_model")?;
+    let whisper_model = db::get_setting(&conn, "local_whisper_model")?;
+    let whisper_preset = db::get_setting(&conn, "whisper_preset")?;
+    let whisper_use_gpu = db::get_setting(&conn, "local_whisper_use_gpu")?
+        .and_then(|v| match v.as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        });
+    let cfg = crate::stt::from_legacy_settings(
+        provider.as_deref(),
+        model.as_deref(),
+        whisper_model.as_deref(),
+        whisper_preset.as_deref(),
+        whisper_use_gpu,
+    );
+    let json = serde_json::to_string(&cfg)?;
+    db::set_setting(&conn, "transcribe_config", &json)?;
+    Ok(cfg)
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalWhisperModelStatus {
