@@ -3,6 +3,7 @@
 mod adapter;
 mod auth;
 mod config;
+mod deepgram;
 mod groq;
 mod keychain;
 mod local;
@@ -20,6 +21,7 @@ pub use config::{
 pub use keychain::{
     keychain_account_for, new_cache, requires_api_key, ApiKeyCache, KEYCHAIN_SERVICE,
 };
+pub use deepgram::DeepgramAdapter;
 pub use groq::GroqAdapter;
 pub use local::LocalWhisperAdapter;
 pub use openai::OpenAiAdapter;
@@ -60,8 +62,7 @@ pub fn build_adapter(
             ))
         }
         ProviderConfig::Groq(_) => Box::new(GroqAdapter::new()),
-        // DeepgramAdapter lands in Phase 2 Task 6.
-        ProviderConfig::Deepgram(_) => unreachable!("DeepgramAdapter lands in Phase 2 Task 6"),
+        ProviderConfig::Deepgram(_) => Box::new(DeepgramAdapter::new()),
     }
 }
 
