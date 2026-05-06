@@ -4,6 +4,8 @@ import { Row, Section } from "../components/Section";
 import { Select } from "../components/Select";
 import { useDeveloperMode } from "../../../lib/useDeveloperMode";
 import {
+  DEEPGRAM_MODELS,
+  GROQ_MODELS,
   LOCAL_PROVIDER,
   PROVIDERS_BASE,
   TRANSCRIBE_MODELS,
@@ -76,6 +78,37 @@ export function TranscriptionTab({
                 <code>whisper-1</code> or <code>gpt-4o-transcribe</code>.
               </p>
             )}
+          </Row>
+        )}
+        {provider === "deepgram" && (
+          <Row label="Model">
+            <Select
+              value={s.deepgram_model}
+              onChange={(v) => update("deepgram_model", v)}
+              options={DEEPGRAM_MODELS.map((m) => ({ value: m, label: m }))}
+            />
+            <p className="text-xs text-[var(--color-text-muted)] mt-2">
+              <code>nova-3</code> is the current best for English; falls
+              back gracefully to other languages. Word timestamps and
+              vocabulary biasing (via <code>keywords</code> param) work on
+              every model. Add your Deepgram API key under Settings → API
+              keys.
+            </p>
+          </Row>
+        )}
+        {provider === "groq" && (
+          <Row label="Model">
+            <Select
+              value={s.groq_model}
+              onChange={(v) => update("groq_model", v)}
+              options={GROQ_MODELS.map((m) => ({ value: m, label: m }))}
+            />
+            <p className="text-xs text-[var(--color-text-muted)] mt-2">
+              Groq hosts <code>whisper-large-v3-turbo</code> at OpenAI-
+              compatible endpoints — same Whisper quality, ~10× cheaper
+              and faster than OpenAI's hosted Whisper. Add your Groq API
+              key under Settings → API keys.
+            </p>
           </Row>
         )}
       </Section>

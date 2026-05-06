@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { ipc, onDiarizeDownloadProgress, onLocalWhisperProgress } from "../../lib/ipc";
+import {
+  ipc,
+  onDiarizeDownloadProgress,
+  onLocalWhisperProgress,
+  type ProviderConfig,
+  type TranscribeProvider,
+} from "../../lib/ipc";
 import {
   DEFAULTS,
   EMPTY_DIARIZE_STATE,
@@ -11,6 +17,7 @@ import {
   type KeyState,
   type LlmModelsState,
   type LocalState,
+  type Provider,
 } from "./types";
 
 // One hook to own every piece of Settings page state plus the handlers
@@ -19,6 +26,8 @@ import {
 // stay focused on layout.
 export function useSettings() {
   const [openaiKey, setOpenaiKey] = useState<KeyState>(EMPTY_KEY_STATE);
+  const [deepgramKey, setDeepgramKey] = useState<KeyState>(EMPTY_KEY_STATE);
+  const [groqKey, setGroqKey] = useState<KeyState>(EMPTY_KEY_STATE);
   const [local, setLocal] = useState<LocalState>(EMPTY_LOCAL_STATE);
   const [diarize, setDiarize] = useState<DiarizeState>(EMPTY_DIARIZE_STATE);
   // Parallel state for the Sortformer engine. Tracked independently of
@@ -33,14 +42,18 @@ export function useSettings() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [k1, models, ds, ss] = await Promise.all([
+      const [k1, kdg, kgrq, models, ds, ss] = await Promise.all([
         ipc.getApiKey(),
+        ipc.getProviderKey("deepgram").catch(() => null),
+        ipc.getProviderKey("groq").catch(() => null),
         ipc.localWhisperModels(),
         ipc.diarizeStatus("community1").catch(() => null),
         ipc.diarizeStatus("sortformer").catch(() => null),
       ]);
       if (cancelled) return;
       setOpenaiKey((p) => ({ ...p, hasKey: !!k1 }));
+      setDeepgramKey((p) => ({ ...p, hasKey: !!kdg }));
+      setGroqKey((p) => ({ ...p, hasKey: !!kgrq }));
       setLocal((p) => ({ ...p, models }));
       setDiarize((p) => ({ ...p, status: ds }));
       setSortformer((p) => ({ ...p, status: ss }));
@@ -331,29 +344,94 @@ export function useSettings() {
   async function update(key: EditableKey, value: string) {
     setS((prev) => ({ ...prev, [key]: value }));
     await ipc.setSetting(key, value);
+    // Phase 2: keep typed transcribe_config in sync with legacy keys for
+    // any setting that affects provider choice, so a future Phase 3 that
+    // retires the legacy keys finds a valid typed config already on disk.
+    if (TRANSCRIBE_KEYS.has(key)) {
+      const next = { ...s, [key]: value };
+      const cfg = buildProviderConfig(next as Record<EditableKey, string>);
+      if (cfg) {
+        try {
+          await ipc.setProviderConfig(cfg);
+        } catch (e) {
+          // Non-fatal: legacy keys still work. Log so anyone debugging
+          // a stale typed cache notices.
+          console.warn("[settings] setProviderConfig failed:", e);
+        }
+      }
+    }
   }
 
-  async function saveKey() {
-    if (!openaiKey.draft.trim()) return;
-    await ipc.setApiKey(openaiKey.draft.trim());
-    setOpenaiKey({ draft: "", hasKey: true, testing: false, result: null });
+  /// Build a typed ProviderConfig from the current legacy-key state.
+  /// Returns null if the chosen provider's required keys are missing.
+  function buildProviderConfig(
+    snapshot: Record<EditableKey, string>,
+  ): ProviderConfig | null {
+    const provider = (snapshot.transcribe_provider || "openai") as Provider;
+    switch (provider) {
+      case "openai":
+        return { provider: "openai", model: snapshot.transcribe_model };
+      case "local":
+        return {
+          provider: "local",
+          model_id: snapshot.local_whisper_model,
+          preset: snapshot.whisper_preset,
+          use_gpu: snapshot.local_whisper_use_gpu !== "false",
+        };
+      case "deepgram":
+        return { provider: "deepgram", model: snapshot.deepgram_model };
+      case "groq":
+        return { provider: "groq", model: snapshot.groq_model };
+    }
   }
 
-  async function testKey() {
-    setOpenaiKey((p) => ({ ...p, testing: true }));
+  async function saveProviderKey(provider: TranscribeProvider) {
+    const slot =
+      provider === "openai" ? openaiKey
+      : provider === "deepgram" ? deepgramKey
+      : provider === "groq" ? groqKey
+      : null;
+    const setter =
+      provider === "openai" ? setOpenaiKey
+      : provider === "deepgram" ? setDeepgramKey
+      : provider === "groq" ? setGroqKey
+      : null;
+    if (!slot || !setter || !slot.draft.trim()) return;
+    await ipc.setProviderKey(provider, slot.draft.trim());
+    setter({ draft: "", hasKey: true, testing: false, result: null });
+  }
+
+  async function testProviderKey(provider: TranscribeProvider) {
+    const setter =
+      provider === "openai" ? setOpenaiKey
+      : provider === "deepgram" ? setDeepgramKey
+      : provider === "groq" ? setGroqKey
+      : null;
+    if (!setter) return;
+    setter((p) => ({ ...p, testing: true }));
     try {
-      const r = await ipc.testApiKey();
+      const r = await ipc.testProviderKey(provider);
       const result = r.ok
         ? ({ ok: true } as const)
         : ({ ok: false, message: `${r.status}: ${r.error ?? "unknown error"}` } as const);
-      setOpenaiKey((p) => ({ ...p, testing: false, result }));
+      setter((p) => ({ ...p, testing: false, result }));
     } catch (e) {
-      setOpenaiKey((p) => ({
+      setter((p) => ({
         ...p,
         testing: false,
         result: { ok: false, message: String(e) },
       }));
     }
+  }
+
+  // Phase-1 compat shims. Keep the existing OpenAI Settings tab working
+  // by delegating to the generic provider helpers.
+  async function saveKey() {
+    await saveProviderKey("openai");
+  }
+
+  async function testKey() {
+    await testProviderKey("openai");
   }
 
   return {
@@ -363,6 +441,12 @@ export function useSettings() {
     setOpenaiKey,
     saveKey,
     testKey,
+    deepgramKey,
+    setDeepgramKey,
+    groqKey,
+    setGroqKey,
+    saveProviderKey,
+    testProviderKey,
     local,
     downloadModel,
     deleteModel,
@@ -376,5 +460,18 @@ export function useSettings() {
     refreshLlmModels,
   };
 }
+
+// Settings keys that, when changed, should trigger a re-write of the
+// typed `transcribe_config` so the typed cache stays in sync with the
+// legacy flat keys. Each provider's per-model key is in here too.
+const TRANSCRIBE_KEYS = new Set<EditableKey>([
+  "transcribe_provider",
+  "transcribe_model",
+  "whisper_preset",
+  "local_whisper_model",
+  "local_whisper_use_gpu",
+  "deepgram_model",
+  "groq_model",
+]);
 
 export type SettingsHook = ReturnType<typeof useSettings>;

@@ -11,7 +11,7 @@ import type { Theme } from "../../lib/theme";
 
 export type EditableKey = Exclude<SettingsKey, "theme">;
 
-export type Provider = "openai" | "local";
+export type Provider = "openai" | "local" | "deepgram" | "groq";
 
 export const DEFAULTS: Record<EditableKey, string> = {
   language: "no",
@@ -20,6 +20,8 @@ export const DEFAULTS: Record<EditableKey, string> = {
   whisper_preset: "quality",
   local_whisper_model: "large-v3-turbo-q5",
   local_whisper_use_gpu: "true",
+  deepgram_model: "nova-3",
+  groq_model: "whisper-large-v3-turbo",
   default_summary_preset: "meeting",
   diarize_model: "community1",
   community1_threshold: "0.5",
@@ -34,10 +36,14 @@ export const DEFAULTS: Record<EditableKey, string> = {
   local_llm_model: "",
   local_llm_think: "false",
   developer_mode: "false",
-  silence_rms_threshold: "0.008",
+  silence_rms_threshold: "0.005",
 };
 
-export const PROVIDERS_BASE = [{ value: "openai", label: "OpenAI" }];
+export const PROVIDERS_BASE = [
+  { value: "openai", label: "OpenAI" },
+  { value: "deepgram", label: "Deepgram" },
+  { value: "groq", label: "Groq (Whisper Large v3 Turbo)" },
+];
 export const LOCAL_PROVIDER = {
   value: "local",
   label: "Local (Whisper turbo, on-device)",
@@ -66,6 +72,10 @@ export const TRANSCRIBE_MODELS = [
   "gpt-4o-transcribe",
   "gpt-4o-transcribe-diarize",
 ];
+
+export const DEEPGRAM_MODELS = ["nova-3", "nova-2", "base"];
+
+export const GROQ_MODELS = ["whisper-large-v3-turbo"];
 
 export const SUMMARY_MODELS = [
   "gpt-5.4-mini",

@@ -57,6 +57,12 @@ export function Settings() {
               setOpenaiKey={settings.setOpenaiKey}
               saveKey={settings.saveKey}
               testKey={settings.testKey}
+              deepgramKey={settings.deepgramKey}
+              setDeepgramKey={settings.setDeepgramKey}
+              groqKey={settings.groqKey}
+              setGroqKey={settings.setGroqKey}
+              saveProviderKey={settings.saveProviderKey}
+              testProviderKey={settings.testProviderKey}
             />
           ),
         },

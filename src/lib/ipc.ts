@@ -40,6 +40,8 @@ export type SettingsKey =
   | "whisper_preset"
   | "local_whisper_model"
   | "local_whisper_use_gpu"
+  | "deepgram_model"
+  | "groq_model"
   | "default_summary_preset"
   | "diarize_model"
   | "community1_threshold"
@@ -57,7 +59,18 @@ export type SettingsKey =
   | "developer_mode"
   | "silence_rms_threshold";
 
-export type TranscribeProvider = "openai" | "local";
+export type TranscribeProvider = "openai" | "local" | "deepgram" | "groq";
+
+/// Mirror of the Rust `crate::stt::ProviderConfig` tagged union. Used by
+/// `setProviderConfig` so the backend can deserialize directly without
+/// the frontend touching legacy flat keys. Phase 2: emitted alongside
+/// legacy-key writes for forward compatibility; Phase 3 will retire the
+/// legacy keys.
+export type ProviderConfig =
+  | { provider: "openai"; model: string; base_url?: string }
+  | { provider: "local"; model_id: string; preset: string; use_gpu: boolean }
+  | { provider: "deepgram"; model: string; base_url?: string }
+  | { provider: "groq"; model: string };
 
 export type SummaryPrompt = {
   id: string;
@@ -185,6 +198,18 @@ export const ipc = {
   getApiKey: () => invoke<string | null>("api_key_get"),
   setApiKey: (key: string) => invoke<void>("api_key_set", { key }),
   testApiKey: () => invoke<{ ok: boolean; status: number; error: string | null }>("api_key_test"),
+  // Phase-2 generic surface. Use these for new providers; the api_key_*
+  // shims above stay for compat but resolve to the same Keychain slot.
+  getProviderKey: (provider: TranscribeProvider) =>
+    invoke<string | null>("provider_key_get", { provider }),
+  setProviderKey: (provider: TranscribeProvider, key: string) =>
+    invoke<void>("provider_key_set", { provider, key }),
+  testProviderKey: (provider: TranscribeProvider) =>
+    invoke<{ ok: boolean; status: number; error: string | null }>("provider_key_test", {
+      provider,
+    }),
+  setProviderConfig: (config: ProviderConfig) =>
+    invoke<void>("set_provider_config", { config }),
 
   localWhisperModels: () =>
     invoke<LocalWhisperModelStatus[]>("local_whisper_models"),
