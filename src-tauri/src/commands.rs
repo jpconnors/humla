@@ -57,16 +57,75 @@ const DEFAULT_SUMMARY_MODEL: &str = "gpt-5.4-mini";
 // llama-server, or vLLM will override this in Settings.
 const DEFAULT_LOCAL_LLM_BASE_URL: &str = "http://localhost:11434/v1";
 const DEFAULT_SUMMARY_PROMPT: &str = "Du lager møtenotater fra en automatisk transkribert samtale.\n\nKilder du får:\n- [Notater] — det brukeren skrev under møtet (autoritativ kilde for navn, tall og beslutninger).\n- [Transkripsjon] — automatisk generert fra lyden, kan inneholde feil.\n\nNår transkripsjon og notater er i konflikt, stol på notatene.\n\nSkriv på norsk i Markdown. Inkluder kun seksjoner som er reelt relevante — ikke skriv \"Ingen identifisert\".\n\n- **Sammendrag** — 2–4 setninger som fanger essensen.\n- **Beslutninger** — kun reelle beslutninger som ble tatt.\n- **Handlingspunkter** — på formen \"Beskrivelse — Ansvarlig (frist når oppgitt)\".\n- **Åpne spørsmål** — uavklarte ting som krever oppfølging.\n\nVær konkret og kort. Ikke gjenta deg selv. Ikke finn på detaljer som ikke står i kilden.";
+// Legacy SQLite row that used to hold the OpenAI API key. New installs
+// never touch it; existing installs migrate it forward to Keychain on
+// first read (see `read_openai_api_key`) and blank the row so a future
+// DB export / backup doesn't leak the secret.
 const API_KEY: &str = "__openai_api_key__";
 
-fn read_secret(state: &State<AppState>, key: &str) -> Result<Option<String>, String> {
-    let conn = state.db.lock();
-    db::get_setting(&conn, key).map_err(err).map(|opt| {
-        opt.and_then(|s| {
+// Keychain coordinates. Service matches the bundle id (TCC + Keychain
+// ACLs key on this); account is a stable label for the secret type so
+// we can add more secrets later without colliding.
+const KEYCHAIN_SERVICE: &str = "no.humla.app";
+const KEYCHAIN_ACCOUNT_OPENAI: &str = "openai_api_key";
+
+/// Read the OpenAI API key from the macOS Keychain. Returns Ok(None)
+/// when no key is stored. On the first call after upgrading from a
+/// pre-Keychain build, migrates the legacy plaintext row from SQLite
+/// into the Keychain transparently and blanks the SQLite copy.
+fn read_openai_api_key(state: &State<AppState>) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT_OPENAI)
+        .map_err(|e| format!("keychain entry: {e}"))?;
+    match entry.get_password() {
+        Ok(s) => {
             let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
-        })
-    })
+            Ok(if t.is_empty() { None } else { Some(t) })
+        }
+        Err(keyring::Error::NoEntry) => migrate_legacy_api_key(state, &entry),
+        Err(e) => Err(format!("keychain read: {e}")),
+    }
+}
+
+fn migrate_legacy_api_key(
+    state: &State<AppState>,
+    entry: &keyring::Entry,
+) -> Result<Option<String>, String> {
+    let legacy = {
+        let conn = state.db.lock();
+        db::get_setting(&conn, API_KEY).map_err(err)?.unwrap_or_default()
+    };
+    let trimmed = legacy.trim().to_string();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    entry
+        .set_password(&trimmed)
+        .map_err(|e| format!("keychain migrate: {e}"))?;
+    let conn = state.db.lock();
+    let _ = db::set_setting(&conn, API_KEY, "");
+    Ok(Some(trimmed))
+}
+
+/// Write the OpenAI API key to the Keychain. Empty input deletes the
+/// entry. Always blanks the legacy SQLite row in lockstep so an old
+/// plaintext value can't outlive the new write.
+fn set_openai_api_key(state: &State<AppState>, key: &str) -> Result<(), String> {
+    let trimmed = key.trim();
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT_OPENAI)
+        .map_err(|e| format!("keychain entry: {e}"))?;
+    if trimmed.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(format!("keychain delete: {e}")),
+        }
+    } else {
+        entry
+            .set_password(trimmed)
+            .map_err(|e| format!("keychain write: {e}"))?;
+    }
+    let conn = state.db.lock();
+    let _ = db::set_setting(&conn, API_KEY, "");
+    Ok(())
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String { e.to_string() }
@@ -969,13 +1028,12 @@ pub fn summary_prompts_delete(state: State<AppState>, id: String) -> Result<(), 
 
 #[tauri::command]
 pub fn api_key_get(state: State<AppState>) -> Result<Option<String>, String> {
-    Ok(read_secret(&state, API_KEY)?.map(|_| "stored".to_string()))
+    Ok(read_openai_api_key(&state)?.map(|_| "stored".to_string()))
 }
 
 #[tauri::command]
 pub fn api_key_set(state: State<AppState>, key: String) -> Result<(), String> {
-    let conn = state.db.lock();
-    db::set_setting(&conn, API_KEY, key.trim()).map_err(err)
+    set_openai_api_key(&state, &key)
 }
 
 #[derive(serde::Serialize)]
@@ -987,7 +1045,7 @@ pub struct TestResult {
 
 #[tauri::command]
 pub async fn api_key_test(state: State<'_, AppState>) -> Result<TestResult, String> {
-    let key = read_secret(&state, API_KEY)?.ok_or_else(|| "No API key stored".to_string())?;
+    let key = read_openai_api_key(&state)?.ok_or_else(|| "No API key stored".to_string())?;
 
     let r = openai::client()
         .get(format!("{}/models", openai::BASE))
@@ -1600,7 +1658,7 @@ pub async fn recording_start(
                 "Local Whisper model not downloaded. Download it in Settings → Transcription.",
             )
         }
-        _ => read_secret(&state, API_KEY)?
+        _ => read_openai_api_key(&state)?
             .is_none()
             .then_some("OpenAI API key not set. Add one in Settings → API keys."),
     };
@@ -2886,35 +2944,40 @@ async fn transcribe_chunk(
 ) -> anyhow::Result<()> {
     let cfg = {
         let state: State<AppState> = app.state();
-        let conn = state.db.lock();
-        let provider = db::get_setting(&conn, "transcribe_provider")?
-            .unwrap_or_else(|| DEFAULT_TRANSCRIBE_PROVIDER.to_string());
-        // Per-note language wins over the global. Empty (pre-feature notes
-        // and the "use default" sentinel) falls back to the global setting.
-        let global_language = db::get_setting(&conn, "language")?
-            .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
-        let note_language = db::get_note(&conn, &note_id)
-            .map(|n| n.language)
-            .unwrap_or_default();
-        let language = if note_language.trim().is_empty() {
-            global_language
-        } else {
-            note_language
+        let (provider, language, openai_model, whisper_preset, vocabulary) = {
+            let conn = state.db.lock();
+            let provider = db::get_setting(&conn, "transcribe_provider")?
+                .unwrap_or_else(|| DEFAULT_TRANSCRIBE_PROVIDER.to_string());
+            // Per-note language wins over the global. Empty (pre-feature notes
+            // and the "use default" sentinel) falls back to the global setting.
+            let global_language = db::get_setting(&conn, "language")?
+                .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
+            let note_language = db::get_note(&conn, &note_id)
+                .map(|n| n.language)
+                .unwrap_or_default();
+            let language = if note_language.trim().is_empty() {
+                global_language
+            } else {
+                note_language
+            };
+            let openai_model = db::get_setting(&conn, "transcribe_model")?
+                .unwrap_or_else(|| DEFAULT_TRANSCRIBE_MODEL.to_string());
+            let whisper_preset = db::get_setting(&conn, "whisper_preset")?
+                .unwrap_or_else(|| DEFAULT_WHISPER_PRESET.to_string());
+            let vocabulary = db::get_setting(&conn, "custom_vocabulary")?
+                .unwrap_or_default();
+            (provider, language, openai_model, whisper_preset, vocabulary)
         };
-        // Cloud providers need a key; local Whisper does not.
+        // Read the API key OUTSIDE the DB lock — keychain access is a
+        // synchronous Security framework call and shouldn't be sequenced
+        // behind the DB mutex. Cloud providers need a key; local Whisper
+        // does not.
         let api_key = match provider.as_str() {
             "local" => String::new(),
-            _ => db::get_setting(&conn, API_KEY)?
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
+            _ => read_openai_api_key(&state)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
                 .ok_or_else(|| anyhow::anyhow!("no OpenAI API key"))?,
         };
-        let openai_model = db::get_setting(&conn, "transcribe_model")?
-            .unwrap_or_else(|| DEFAULT_TRANSCRIBE_MODEL.to_string());
-        let whisper_preset = db::get_setting(&conn, "whisper_preset")?
-            .unwrap_or_else(|| DEFAULT_WHISPER_PRESET.to_string());
-        let vocabulary = db::get_setting(&conn, "custom_vocabulary")?
-            .unwrap_or_default();
         TranscribeCfg {
             provider,
             api_key,
@@ -3205,6 +3268,7 @@ struct ResolvedProvider {
 fn resolve_provider(
     conn: &rusqlite::Connection,
     note: &Note,
+    openai_api_key: Option<String>,
 ) -> anyhow::Result<ResolvedProvider> {
     let note_override = note.summary_provider.trim();
     let provider = if note_override.is_empty() {
@@ -3244,8 +3308,7 @@ fn resolve_provider(
             })
         }
         _ => {
-            let api_key = db::get_setting(conn, API_KEY)?
-                .map(|s| s.trim().to_string())
+            let api_key = openai_api_key
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| anyhow::anyhow!("OpenAI API key not set"))?;
             let model = db::get_setting(conn, "summary_model")?
@@ -3280,11 +3343,15 @@ pub async fn summarize_note(app: AppHandle, note_id: String) -> Result<(), Strin
 }
 
 async fn run_summary(app: AppHandle, note_id: String) -> anyhow::Result<()> {
+    let state: State<AppState> = app.state();
+    // Read the API key out of band — keychain lookup shouldn't sit
+    // inside the DB lock that resolve_provider takes.
+    let openai_api_key = read_openai_api_key(&state)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let (provider, custom_prompt, language, note) = {
-        let state: State<AppState> = app.state();
         let conn = state.db.lock();
         let n = db::get_note(&conn, &note_id)?;
-        let p_resolved = resolve_provider(&conn, &n)?;
+        let p_resolved = resolve_provider(&conn, &n, openai_api_key)?;
         let p = db::get_setting(&conn, "summary_prompt")?
             .unwrap_or_else(|| DEFAULT_SUMMARY_PROMPT.to_string());
         let global_lang = db::get_setting(&conn, "language")?
