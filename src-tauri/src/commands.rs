@@ -3027,13 +3027,6 @@ fn build_labelled_transcript(
     merge_run_on_sentences(&output)
 }
 
-/// Maximum word count for either side of a candidate merge to qualify
-/// as a chunk-boundary artefact rather than a real cross-speaker turn.
-/// Two substantial turns (>8 words each) are almost always real;
-/// requiring at least one to be short keeps the heuristic from fusing
-/// genuine back-and-forth into single lines.
-const SENTENCE_MERGE_MAX_WORDS: usize = 8;
-
 /// Strip a leading `<label>: ` from a transcript line, returning the
 /// remainder. Mirrors the format `build_labelled_transcript` emits, so
 /// the merge pass can drop the absorbed line's prefix when joining.
@@ -3052,6 +3045,11 @@ fn strip_label_prefix(line: &str) -> &str {
 /// Whether `line` ends with a sentence-terminating punctuation mark,
 /// allowing trailing close-quote/close-paren after the terminator
 /// (`he said.` / `(yes!)` / `"done."`). Trailing whitespace is ignored.
+///
+/// Em-dash (`—`), en-dash (`–`), and a final ASCII hyphen are also
+/// treated as terminators. They mark a speaker trailing off mid-thought
+/// or being interrupted — fusing across them would join two distinct
+/// turns into nonsense.
 fn ends_sentence(line: &str) -> bool {
     let trimmed = line.trim_end();
     let cleaned: String = trimmed
@@ -3067,7 +3065,11 @@ fn ends_sentence(line: &str) -> bool {
     }
     let target_idx = total.saturating_sub(len + 1);
     let last_meaningful = chars.nth(target_idx);
-    matches!(last_meaningful, Some('.') | Some('!') | Some('?') | Some(':') | Some(';') | Some('…'))
+    matches!(
+        last_meaningful,
+        Some('.') | Some('!') | Some('?') | Some(':') | Some(';')
+            | Some('…') | Some('—') | Some('–') | Some('-')
+    )
 }
 
 /// Whether `line` (after any `<label>: ` prefix) begins with a
@@ -3088,36 +3090,38 @@ fn starts_lowercase(line: &str) -> bool {
 /// without a sentence terminator and the next line starts with a
 /// lowercase letter, the next line is almost certainly a continuation
 /// of the same sentence (Whisper cut a chunk mid-utterance, or the
-/// diarizer flipped speaker on a single word).
+/// diarizer flipped speaker on a long fragment).
 ///
-/// Conservative guards against fusing real turns:
-/// - Either side must be short (≤ `SENTENCE_MERGE_MAX_WORDS`). Two
-///   substantial turns are almost always real even without a
-///   terminator on the first.
-/// - The first line's speaker label is preserved (it owned the start
-///   of the sentence). The second line's label is dropped on merge.
-/// - Lines without speaker labels are passed through unchanged.
+/// The two textual cues together are highly specific. Whisper at a
+/// real sentence boundary almost always emits a terminator AND
+/// capitalises the next sentence — so when neither happens, it's
+/// almost always one continuous utterance that got chopped across
+/// chunks. Earlier versions guarded with a word-count cap (≤ 8 words
+/// on either side) but that left long mid-sentence breaks intact in
+/// real recordings, which was the user-reported bug.
 ///
-/// This is a textual pass run after `bridge_short_interjections`, so
-/// it catches what the structural sandwich rule can't (e.g. a turn at
-/// the end of the transcript with no following same-speaker neighbour
-/// to bridge through).
+/// Em-dashes and en-dashes count as terminators (see `ends_sentence`)
+/// so a speaker trailing off mid-thought ("but I —") doesn't fuse
+/// into the next speaker's turn.
+///
+/// The first line's speaker label is preserved (it owned the start of
+/// the sentence). The second line's label is dropped on merge. Lines
+/// without speaker labels pass through unchanged.
+///
+/// Runs after `bridge_short_interjections`, catching what the
+/// structural sandwich rule can't (e.g. a long fragment at the end of
+/// the transcript, or a borderline diarizer flip across a multi-word
+/// span).
 fn merge_run_on_sentences(text: &str) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut merged: Vec<String> = Vec::with_capacity(lines.len());
     for line in lines {
         if let Some(prev) = merged.last_mut() {
             if !ends_sentence(prev) && starts_lowercase(line) {
-                let prev_words = prev.split_whitespace().count();
-                let next_words = line.split_whitespace().count();
-                if prev_words <= SENTENCE_MERGE_MAX_WORDS
-                    || next_words <= SENTENCE_MERGE_MAX_WORDS
-                {
-                    let stripped = strip_label_prefix(line);
-                    prev.push(' ');
-                    prev.push_str(stripped);
-                    continue;
-                }
+                let stripped = strip_label_prefix(line);
+                prev.push(' ');
+                prev.push_str(stripped);
+                continue;
             }
         }
         merged.push(line.to_string());
@@ -4116,15 +4120,31 @@ mod diarize_tests {
     }
 
     #[test]
-    fn merge_keeps_real_turns_when_both_substantial() {
-        // Two long lines with no terminator on the first — could be a
-        // real cross-talk pattern. The word-count guard preserves the
-        // boundary because both sides exceed the threshold.
-        let prev_part = "I really think we should reconsider the entire approach";
-        let next_part = "but the timeline doesnt allow for any major scope changes now";
-        let input = format!("Speaker 1: {prev_part}\nSpeaker 2: {next_part}");
-        let output = merge_run_on_sentences(&input);
-        assert!(output.contains('\n'), "expected boundary preserved: {output}");
+    fn merge_glues_long_substantial_fragments_when_signal_is_strong() {
+        // Real-recording case from a tester transcript: a 14-word line
+        // ends with "Not" (no terminator) and the next 11-word line
+        // starts with "quite" (lowercase). Whisper cut a chunk between
+        // "things." and "Not quite 10". An earlier word-count guard
+        // (≤ 8 either side) left this split, which was the user-
+        // reported bug. The textual signal alone is now enough.
+        let input = "Speaker 1: Like you were working probably for 10 years in a lot of different things. Not\nSpeaker 1: quite 10, but a solid six or seven years as a working actor.";
+        let output = merge_run_on_sentences(input);
+        assert!(!output.contains('\n'), "expected merge: {output}");
+    }
+
+    #[test]
+    fn merge_keeps_em_dash_interruption_distinct() {
+        // A speaker trailing off / interrupted ends with an em-dash —
+        // the next speaker's lowercase reply must NOT fuse, or two
+        // distinct turns become one nonsensical sentence.
+        let input = "Speaker 1: But what about the —\nSpeaker 2: right but we have no time.";
+        assert_eq!(merge_run_on_sentences(input), input);
+    }
+
+    #[test]
+    fn merge_keeps_en_dash_interruption_distinct() {
+        let input = "Speaker 1: I was going to say –\nSpeaker 2: yeah I know what you mean.";
+        assert_eq!(merge_run_on_sentences(input), input);
     }
 
     #[test]
@@ -4769,18 +4789,21 @@ mod diarize_tests {
     fn dedup_keeps_mic_when_sys_window_is_far_away() {
         // Mic chunk's text matches sys text 30 seconds later — outside the
         // overlap window, must NOT dedup. The remote echoing the user
-        // later is genuine new content.
+        // later is genuine new content. Sentence terminators on each
+        // chunk keep the post-build heuristic merge from dissolving the
+        // speaker boundary (the merge rule needs prev to lack a
+        // terminator, which it doesn't here).
         let chunks = vec![
-            mic(0, "the proposal is to extend the deadline to Friday"),
-            sys(30_000, "the proposal is to extend the deadline to Friday"),
+            mic(0, "The proposal is to extend the deadline to Friday."),
+            sys(30_000, "The proposal is to extend the deadline to Friday."),
         ];
         let labeller = |c: &ChunkRecord| match c.source {
             ChunkSource::Mic => Some("You".to_string()),
             ChunkSource::Sys => Some("Speaker 1".to_string()),
         };
         let out = build_labelled_transcript(&chunks, &whole_chunk_pieces(labeller));
-        assert!(out.contains("You: the proposal is to extend"));
-        assert!(out.contains("Speaker 1: the proposal is to extend"));
+        assert!(out.contains("You: The proposal is to extend"));
+        assert!(out.contains("Speaker 1: The proposal is to extend"));
     }
 
     #[test]
