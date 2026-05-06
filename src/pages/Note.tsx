@@ -55,6 +55,18 @@ export function Note() {
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
 
+  // Pending field changes accumulated across the debounce window. The
+  // single saveTimer used to capture only one field's value per cycle —
+  // editing title then body within 300 ms would clear the title's
+  // setTimeout and never persist it. This object collects every field
+  // touched since the last flush; when the timer fires it's sent as one
+  // partial update and cleared.
+  const pendingChanges = useRef<Partial<TNote>>({});
+  // Mirror of the latest draft so the unmount flush can read it without
+  // capturing a stale snapshot.
+  const draftRef = useRef<TNote | null>(null);
+  draftRef.current = draft;
+
   useEffect(() => {
     let cancelled = false;
     ipc.getSetting("language").then((v) => {
@@ -68,16 +80,26 @@ export function Note() {
     };
   }, []);
 
-  // Drop any pending debounced save when the component unmounts.
-  // Without this, navigating away within the 300ms patch() window leaks
-  // a setTimeout that fires after unmount with the stale `next` snapshot
-  // and writes it back via ipc.updateNote + upsert(next), clobbering
-  // edits the user made on the next visit to the same note.
+  // On unmount, flush any pending edits that haven't fired their timer
+  // yet. Fire-and-forget — the Tauri invoke promise survives the React
+  // teardown. Without this, navigating away within the 300 ms window
+  // loses the user's last edit.
   useEffect(() => {
     return () => {
-      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      if (saveTimer.current) {
+        window.clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      const changes = pendingChanges.current;
+      pendingChanges.current = {};
+      const d = draftRef.current;
+      if (!d) return;
+      const keys = Object.keys(changes);
+      if (keys.length === 0) return;
+      void ipc.updateNote(d.id, changes as Parameters<typeof ipc.updateNote>[1]);
+      upsert({ ...d, ...changes });
     };
-  }, []);
+  }, [upsert]);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,10 +245,16 @@ export function Note() {
     if (!draft) return;
     const next = { ...draft, [field]: value };
     setDraft(next);
+    pendingChanges.current = { ...pendingChanges.current, [field]: value };
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(async () => {
-      await ipc.updateNote(next.id, { [field]: value });
-      upsert(next);
+      saveTimer.current = null;
+      const changes = pendingChanges.current;
+      pendingChanges.current = {};
+      if (Object.keys(changes).length === 0) return;
+      await ipc.updateNote(next.id, changes as Parameters<typeof ipc.updateNote>[1]);
+      const latest = draftRef.current ?? next;
+      upsert({ ...latest, ...changes });
     }, 300);
   }
 
@@ -236,10 +264,16 @@ export function Note() {
     if (!draft) return;
     const next = { ...draft, summary_provider: value };
     setDraft(next);
+    pendingChanges.current = { ...pendingChanges.current, summary_provider: value };
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(async () => {
-      await ipc.updateNote(next.id, { summary_provider: value });
-      upsert(next);
+      saveTimer.current = null;
+      const changes = pendingChanges.current;
+      pendingChanges.current = {};
+      if (Object.keys(changes).length === 0) return;
+      await ipc.updateNote(next.id, changes as Parameters<typeof ipc.updateNote>[1]);
+      const latest = draftRef.current ?? next;
+      upsert({ ...latest, ...changes });
     }, 300);
   }
 

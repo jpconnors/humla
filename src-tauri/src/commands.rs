@@ -174,10 +174,22 @@ pub fn note_audio_files(app: AppHandle, note_id: String) -> Result<Vec<String>, 
 /// from the renderer is rejected silently. We bypass that by invoking
 /// the system `open` directly from the backend, matching the pattern
 /// used by `permissions_open_settings`.
+///
+/// Constrained to paths under the app's data directory: a compromised
+/// renderer otherwise gets a generic file/URL opener via macOS `open`,
+/// which can hand off to arbitrary URL schemes. Both real callers
+/// (`note_diagnostics_dir`, `note_audio_dir`) live under app_data_dir,
+/// so the constraint costs nothing at the seams.
 #[tauri::command]
-pub fn open_in_finder(path: String) -> Result<(), String> {
+pub fn open_in_finder(app: AppHandle, path: String) -> Result<(), String> {
+    let app_dir = app.path().app_data_dir().map_err(err)?;
+    let app_dir_canon = std::fs::canonicalize(&app_dir).map_err(err)?;
+    let requested = std::fs::canonicalize(&path).map_err(err)?;
+    if !requested.starts_with(&app_dir_canon) {
+        return Err("path outside app data dir".into());
+    }
     std::process::Command::new("open")
-        .arg(&path)
+        .arg(&requested)
         .spawn()
         .map_err(|e| format!("open: {e}"))?;
     Ok(())
