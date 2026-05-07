@@ -24,6 +24,8 @@ export function Settings() {
             <TranscriptionTab
               s={settings.s}
               update={settings.update}
+              providerConfig={settings.providerConfig}
+              updateProviderConfig={settings.updateProviderConfig}
               local={settings.local}
               downloadModel={settings.downloadModel}
               deleteModel={settings.deleteModel}
@@ -55,8 +57,6 @@ export function Settings() {
             <ApiKeysTab
               openaiKey={settings.openaiKey}
               setOpenaiKey={settings.setOpenaiKey}
-              saveKey={settings.saveKey}
-              testKey={settings.testKey}
               deepgramKey={settings.deepgramKey}
               setDeepgramKey={settings.setDeepgramKey}
               groqKey={settings.groqKey}

@@ -5,8 +5,6 @@ import type { SettingsHook } from "../useSettings";
 export function ApiKeysTab({
   openaiKey,
   setOpenaiKey,
-  saveKey,
-  testKey,
   deepgramKey,
   setDeepgramKey,
   groqKey,
@@ -17,8 +15,6 @@ export function ApiKeysTab({
   SettingsHook,
   | "openaiKey"
   | "setOpenaiKey"
-  | "saveKey"
-  | "testKey"
   | "deepgramKey"
   | "setDeepgramKey"
   | "groqKey"
@@ -34,8 +30,8 @@ export function ApiKeysTab({
             state={openaiKey}
             setState={setOpenaiKey}
             placeholder="sk-…"
-            onSave={saveKey}
-            onTest={testKey}
+            onSave={() => saveProviderKey("openai")}
+            onTest={() => testProviderKey("openai")}
           />
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
             Used for cloud transcription (Whisper / gpt-4o-transcribe) and
