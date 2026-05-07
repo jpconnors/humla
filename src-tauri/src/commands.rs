@@ -16,9 +16,6 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 const DEFAULT_LANGUAGE: &str = "no";
-const DEFAULT_TRANSCRIBE_PROVIDER: &str = "openai";
-const DEFAULT_TRANSCRIBE_MODEL: &str = "whisper-1";
-const DEFAULT_WHISPER_PRESET: &str = "quality";
 // Default diarization engine. community1 = FluidAudio's
 // OfflineDiarizerManager (the path we shipped through v0.11.0). Existing
 // installs keep this transparently. Users who hit the rapid-turn ceiling
@@ -52,13 +49,6 @@ const DEFAULT_SILENCE_RMS_THRESHOLD: f32 = 0.005;
 // or just listen back. Privacy posture stays opt-in.
 const DEFAULT_KEEP_AUDIO: &str = "false";
 
-// Default ON: Apple Silicon Macs have working Metal and the speedup is
-// huge (~10× over BLAS). When `use_gpu` is true and Metal init fails at
-// runtime, whisper.cpp logs the failure and falls back to BLAS — but the
-// failed compile is noisy and adds startup time. Users on machines where
-// Metal is broken (e.g. macOS Metal compiler rejecting the bundled
-// shader) can flip this off in Settings to skip the failed init entirely.
-const DEFAULT_LOCAL_WHISPER_USE_GPU: &str = "true";
 const DEFAULT_SUMMARY_MODEL: &str = "gpt-5.4-mini";
 // Ollama's default port + OpenAI-compat path. Any user running LM Studio,
 // llama-server, or vLLM will override this in Settings.
@@ -1400,15 +1390,6 @@ fn model_path_for(app: &AppHandle, info: &local_whisper::ModelInfo) -> Result<Pa
 /// Returns the resolved path even when the file doesn't exist on disk —
 /// that's how the caller's "not downloaded" error surfaces with a real
 /// path the user can recognise.
-fn local_whisper_use_gpu_setting(state: &State<AppState>) -> bool {
-    let conn = state.db.lock();
-    db::get_setting(&conn, "local_whisper_use_gpu")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| DEFAULT_LOCAL_WHISPER_USE_GPU.to_string())
-        != "false"
-}
-
 fn local_model_path(
     app: &AppHandle,
     language: &str,
@@ -1769,27 +1750,26 @@ pub async fn recording_start(
     // transcription always fails silently. Resolve the note's language up
     // front too: local_model_path uses it to decide whether a language
     // addon (e.g. NB Whisper for Norwegian) overrides the active primary.
-    let (provider, language) = {
+    let provider_cfg = read_provider_config(&state)
+        .map_err(|e| e.to_string())?;
+    let language = {
         let conn = state.db.lock();
-        let p = db::get_setting(&conn, "transcribe_provider")
-            .map_err(err)?
-            .unwrap_or_else(|| DEFAULT_TRANSCRIBE_PROVIDER.to_string());
         let global = db::get_setting(&conn, "language")
             .map_err(err)?
             .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
         let note_lang = db::get_note(&conn, &note_id)
             .map(|n| n.language)
             .unwrap_or_default();
-        let l = if note_lang.trim().is_empty() { global } else { note_lang };
-        (p, l)
+        if note_lang.trim().is_empty() { global } else { note_lang }
     };
-    // Phase 2: each cloud provider has its own Keychain slot. Look up the
-    // right one based on the active provider so the prerequisite check
-    // doesn't pass when (e.g.) the user picked Deepgram but only saved
-    // an OpenAI key.
-    let pre_err: Option<String> = match provider.as_str() {
-        "local" => {
-            let p = local_model_path(&app, &language, "").map_err(|e| e.to_string())?;
+    // Each cloud provider has its own Keychain slot. Look up the right
+    // one based on the active provider so the prerequisite check doesn't
+    // pass when (e.g.) the user picked Deepgram but only saved an OpenAI
+    // key.
+    let pre_err: Option<String> = match &provider_cfg {
+        crate::stt::ProviderConfig::Local(local_cfg) => {
+            let p = local_model_path(&app, &language, &local_cfg.model_id)
+                .map_err(|e| e.to_string())?;
             if p.exists() {
                 None
             } else {
@@ -1800,14 +1780,7 @@ pub async fn recording_start(
             }
         }
         other => {
-            let provider_id = crate::stt::keychain_account_for(other)
-                .and_then(|_| match other {
-                    "openai" => Some("openai"),
-                    "deepgram" => Some("deepgram"),
-                    "groq" => Some("groq"),
-                    _ => None,
-                })
-                .unwrap_or("openai");
+            let provider_id = other.provider_id();
             if read_provider_api_key(&state, provider_id)?.is_none() {
                 let label = match provider_id {
                     "openai" => "OpenAI",
@@ -1832,9 +1805,10 @@ pub async fn recording_start(
     // chunk doesn't pay the cold-start tax (~1–2 s on Apple Silicon). Fire
     // and forget — by the time VAD rotates the first chunk, the model is
     // already in Metal memory and inference is fast.
-    if provider == "local" {
-        if let Ok(model_path) = local_model_path(&app, &language, "") {
-            let use_gpu = local_whisper_use_gpu_setting(&state);
+    if let crate::stt::ProviderConfig::Local(local_cfg) = &provider_cfg {
+        let model_id = local_cfg.model_id.clone();
+        let use_gpu = local_cfg.use_gpu;
+        if let Ok(model_path) = local_model_path(&app, &language, &model_id) {
             let shared = state.whisper.clone();
             tokio::spawn(async move {
                 if let Err(e) = local_whisper::prewarm(shared, model_path, use_gpu).await {
@@ -3677,14 +3651,18 @@ async fn transcribe_chunk(
     // pass it to the registry. Both providers feed the same `Word` shape
     // downstream so the timeline serialiser can rebase chunk-relative ms
     // onto the playback clock the same way regardless of source.
-    let local_deps = if matches!(provider_cfg, crate::stt::ProviderConfig::Local(_)) {
-        let model_path = local_model_path(&app, &language, "")
+    let local_deps = if let crate::stt::ProviderConfig::Local(local_cfg) = &provider_cfg {
+        let model_path = local_model_path(&app, &language, &local_cfg.model_id)
             .map_err(|e| anyhow::anyhow!(e))?;
-        let (shared, use_gpu) = {
+        let shared = {
             let state: State<AppState> = app.state();
-            (state.whisper.clone(), local_whisper_use_gpu_setting(&state))
+            state.whisper.clone()
         };
-        Some(crate::stt::LocalDeps { shared, model_path, use_gpu })
+        Some(crate::stt::LocalDeps {
+            shared,
+            model_path,
+            use_gpu: local_cfg.use_gpu,
+        })
     } else {
         None
     };
