@@ -35,13 +35,6 @@ export type Folder = {
 
 export type SettingsKey =
   | "language"
-  | "transcribe_provider"
-  | "transcribe_model"
-  | "whisper_preset"
-  | "local_whisper_model"
-  | "local_whisper_use_gpu"
-  | "deepgram_model"
-  | "groq_model"
   | "default_summary_preset"
   | "diarize_model"
   | "community1_threshold"
@@ -203,6 +196,7 @@ export const ipc = {
     invoke<{ ok: boolean; status: number; error: string | null }>("provider_key_test", {
       provider,
     }),
+  getProviderConfig: () => invoke<ProviderConfig>("get_provider_config"),
   setProviderConfig: (config: ProviderConfig) =>
     invoke<void>("set_provider_config", { config }),
 

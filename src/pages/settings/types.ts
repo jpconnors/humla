@@ -15,13 +15,6 @@ export type Provider = "openai" | "local" | "deepgram" | "groq";
 
 export const DEFAULTS: Record<EditableKey, string> = {
   language: "no",
-  transcribe_provider: "openai",
-  transcribe_model: "whisper-1",
-  whisper_preset: "quality",
-  local_whisper_model: "large-v3-turbo-q5",
-  local_whisper_use_gpu: "true",
-  deepgram_model: "nova-3",
-  groq_model: "whisper-large-v3-turbo",
   default_summary_preset: "meeting",
   diarize_model: "community1",
   community1_threshold: "0.5",
