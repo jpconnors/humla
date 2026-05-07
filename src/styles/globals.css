@@ -571,13 +571,16 @@ select {
 .prose-note code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.9em;
-  background: var(--color-pill);
+  /* `--color-pill` is transparent by design (Nothing-style chips); use
+     `--color-pill-hover`'s subtle fill so inline code/pre actually
+     reads as a distinct surface. */
+  background: var(--color-pill-hover);
   padding: 0.1em 0.35em;
   border-radius: 4px;
 }
 .prose-note pre {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: var(--color-pill);
+  background: var(--color-pill-hover);
   padding: 0.75em 1em;
   border-radius: 8px;
   overflow-x: auto;
@@ -647,7 +650,7 @@ select {
   font-size: 0.9em;
   padding: 0.1em 0.35em;
   border-radius: 4px;
-  background: var(--color-pill);
+  background: var(--color-pill-hover);
 }
 .prose-summary blockquote {
   padding-left: 1em;
@@ -696,7 +699,7 @@ select {
   font-size: 0.9em;
   padding: 0.1em 0.3em;
   border-radius: 3px;
-  background: var(--color-pill);
+  background: var(--color-pill-hover);
 }
 .prose-reasoning pre {
   font-family: var(--font-mono);
@@ -706,7 +709,7 @@ select {
   word-break: break-word;
   padding: 0.6em 0.8em;
   border-radius: 4px;
-  background: var(--color-pill);
+  background: var(--color-pill-hover);
 }
 .prose-reasoning blockquote {
   padding-left: 0.8em;
