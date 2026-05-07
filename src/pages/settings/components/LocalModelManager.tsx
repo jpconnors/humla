@@ -1,78 +1,60 @@
 import type { LocalWhisperModelStatus } from "../../../lib/ipc";
+import { LANGUAGES } from "../../../lib/languages";
 import type { LocalState } from "../types";
 import { Btn } from "./Btn";
 import { formatBytes } from "./format";
 
+function languageLabel(code: string | null): string {
+  if (!code) return "Unknown";
+  const found = LANGUAGES.find((l) => l.value === code);
+  return found?.label ?? code;
+}
+
 export function LocalModelManager({
   state,
   activeId,
-  language,
   onDownload,
   onDelete,
   onSelect,
 }: {
   state: LocalState;
   activeId: string;
-  language: string;
+  // `language` is no longer consumed by the model list (Phase 4 dropped
+  // the auto-route addon mechanism). The prop signature stays the same
+  // so the parent doesn't need to change call shape; we just don't read
+  // it. Future re-introduction of language-aware UI hints can pick it
+  // back up.
+  language?: string;
   onDownload: (id: string) => void;
   onDelete: (id: string) => void;
   onSelect: (id: string) => void;
 }) {
-  const primaries = state.models.filter((m) => m.kind === "multilingual");
-  // Show an addon row when its language matches the user's global default.
-  // It's also always shown when already downloaded so the user can delete
-  // it after switching languages.
-  const addons = state.models.filter(
-    (m) => m.kind === "language_specific" && (m.specificLanguage === language || m.downloaded),
-  );
-
+  // One flat list — both kinds rendered together with their language tag.
+  // Multilingual models get the radio button (they're candidates for the
+  // default's model_id); language-specific models don't (they're picked
+  // via per-language overrides, not via this radio).
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-3">
         <p className="text-xs text-[var(--color-text-muted)]">
-          Pick a model to use for transcription. The first download is
-          auto-selected; afterwards switch with the radio button. All
-          models run on-device via Metal.
+          Pick a multilingual model as the default for transcription. Language-
+          specific models (e.g. NB Whisper for Norwegian) sit alongside but
+          are picked via per-language overrides above. All models run on-
+          device via Metal.
         </p>
-        {primaries.map((m) => (
+        {state.models.map((m) => (
           <ModelRow
             key={m.id}
             model={m}
             progress={state.downloading[m.id]}
-            isActive={m.id === activeId}
-            showRadio
+            isActive={m.kind === "multilingual" && m.id === activeId}
+            showRadio={m.kind === "multilingual"}
             onDownload={onDownload}
             onDelete={onDelete}
             onSelect={onSelect}
           />
         ))}
       </div>
-      {addons.length > 0 && (
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1">
-            <p className="text-xs uppercase tracking-wide text-[var(--color-text-muted)]">
-              Add-ons
-            </p>
-            <p className="text-xs text-[var(--color-text-muted)]">
-              Specialised models for specific languages. When downloaded,
-              the addon is used automatically for matching recordings —
-              your active primary still handles every other language.
-            </p>
-          </div>
-          {addons.map((m) => (
-            <ModelRow
-              key={m.id}
-              model={m}
-              progress={state.downloading[m.id]}
-              isActive={false}
-              showRadio={false}
-              onDownload={onDownload}
-              onDelete={onDelete}
-              onSelect={onSelect}
-            />
-          ))}
-        </div>
-      )}
       {state.flash && (
         <p
           className="text-xs px-2 py-1 rounded bg-[var(--color-pill-hover)] inline-block break-all"
@@ -107,6 +89,10 @@ function ModelRow({
   onDelete: (id: string) => void;
   onSelect: (id: string) => void;
 }) {
+  const tagLabel =
+    model.kind === "multilingual"
+      ? "Multilingual"
+      : languageLabel(model.specificLanguage);
   return (
     <div className="flex flex-col gap-2 px-3 py-2 rounded-md border border-[var(--color-line)]">
       <div className="flex items-start gap-2">
@@ -126,11 +112,9 @@ function ModelRow({
         <div className="flex-1 flex flex-col gap-0.5">
           <div className="flex items-center gap-2 text-sm">
             <span className="font-medium">{model.label}</span>
-            {model.kind === "language_specific" && model.specificLanguage && (
-              <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--color-pill-hover)] text-[var(--color-text-muted)]">
-                {model.specificLanguage} auto
-              </span>
-            )}
+            <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--color-pill-hover)] text-[var(--color-text-muted)]">
+              {tagLabel}
+            </span>
             {isActive && model.downloaded && (
               <span className="text-xs text-[var(--color-text-muted)]">
                 · active
