@@ -953,14 +953,17 @@ function CollapsibleHeader({
     >
       {children}
       {actions && (
-        <div className="ml-auto flex items-center">
+        <div className="peer ml-auto flex items-center">
           {actions}
         </div>
       )}
       <span
         className={
           (actions ? "" : "ml-auto ") +
-          "p-1.5 rounded-md text-[var(--color-text-muted)] transition-colors group-hover:bg-[var(--color-pill-hover)] group-hover:text-[var(--color-text)]"
+          // peer-hover overrides suppress the row's group-hover styling
+          // when the copy/actions slot is the actual hover target —
+          // otherwise both buttons light up at once.
+          "p-1.5 rounded-md text-[var(--color-text-muted)] transition-colors group-hover:bg-[var(--color-pill-hover)] group-hover:text-[var(--color-text)] peer-hover:!bg-transparent peer-hover:!text-[var(--color-text-muted)]"
         }
         aria-hidden
       >
