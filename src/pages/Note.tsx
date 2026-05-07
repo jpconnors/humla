@@ -316,7 +316,13 @@ export function Note() {
   return (
     <div className="h-full flex flex-col">
       <div data-tauri-drag-region className="h-10 shrink-0" />
-      <div className="flex-1 overflow-y-auto px-12 pb-32 max-w-3xl mx-auto w-full">
+      {/* Two-layer scroll: the outer div is the full-width viewport that
+          owns the scrollbar (so it sits flush with the right edge of
+          the window). The inner div carries the centered max-w-3xl
+          content column. Splitting them is the only way to get a
+          window-edge scrollbar without making the content full-width. */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-3xl mx-auto w-full px-12 pb-32">
         <textarea
           ref={titleRef}
           value={draft.title}
@@ -568,6 +574,7 @@ export function Note() {
             )}
           </Card>
         )}
+        </div>
       </div>
 
       <RecordingBar noteId={draft.id} />
