@@ -1064,23 +1064,25 @@ pub struct TestResult {
     error: Option<String>,
 }
 
-/// Read the active STT provider config. The Settings UI uses this on
-/// mount as the single source of truth instead of reading the legacy
-/// flat keys (which v0.23 deleted via `db::migrate_transcribe_config`).
+/// Read the active transcription config (default + per-language
+/// overrides). The Settings UI calls this on mount as the source of
+/// truth for the Transcription tab and uses it to drive both the
+/// Default provider section and the Per-language overrides list.
 #[tauri::command]
-pub fn get_provider_config(
+pub fn get_transcribe_config(
     state: State<AppState>,
-) -> Result<crate::stt::ProviderConfig, String> {
-    read_provider_config(&state).map_err(|e| e.to_string())
+) -> Result<crate::stt::TranscribeConfig, String> {
+    read_transcribe_config(&state).map_err(|e| e.to_string())
 }
 
-/// Persist a typed `ProviderConfig` to settings. Frontend writes this
-/// instead of multiple flat-key updates so the choice is atomic.
-/// `read_provider_config` reads this back as the canonical source.
+/// Persist a typed `TranscribeConfig` to settings. Frontend writes the
+/// whole shape on every change so the choice (default + every per-
+/// language entry) is atomic — no partial drift from one path
+/// half-updating.
 #[tauri::command]
-pub fn set_provider_config(
+pub fn set_transcribe_config(
     state: State<AppState>,
-    config: crate::stt::ProviderConfig,
+    config: crate::stt::TranscribeConfig,
 ) -> Result<(), String> {
     let json = serde_json::to_string(&config).map_err(err)?;
     let conn = state.db.lock();
@@ -1421,24 +1423,24 @@ fn local_model_path(
     Ok(dir.join(local_whisper::default_model().filename))
 }
 
-/// Read the active STT provider config from the typed `transcribe_config`
-/// JSON. Falls back to a hardcoded OpenAI / whisper-1 default when the
-/// row is absent or corrupt — same shape that `from_legacy_settings`
-/// produces with all-None inputs, so behaviour matches a fresh install.
-/// The startup migration (`db::migrate_transcribe_config`) ensures the
-/// row is always present after one launch under v0.23+, so the fallback
-/// is purely defensive.
-fn read_provider_config(state: &State<AppState>) -> anyhow::Result<crate::stt::ProviderConfig> {
+/// Read the active transcription config (default + per-language
+/// overrides) from the typed `transcribe_config` JSON. Falls back to a
+/// hardcoded default when the row is absent or corrupt — defensive only;
+/// `db::migrate_per_language_v4` ensures the row is always present after
+/// one launch under v0.24+.
+fn read_transcribe_config(
+    state: &State<AppState>,
+) -> anyhow::Result<crate::stt::TranscribeConfig> {
     let conn = state.db.lock();
     if let Some(json) = db::get_setting(&conn, "transcribe_config")? {
-        if let Ok(cfg) = serde_json::from_str::<crate::stt::ProviderConfig>(&json) {
+        if let Ok(cfg) = serde_json::from_str::<crate::stt::TranscribeConfig>(&json) {
             return Ok(cfg);
         }
         // Corrupted JSON — fall through to the default rather than locking
         // the user out over a malformed cache. Settings UI overwrites
         // this when the user opens the Transcription tab.
     }
-    Ok(crate::stt::from_legacy_settings(None, None, None, None, None))
+    Ok(crate::stt::TranscribeConfig::default_fallback())
 }
 
 #[derive(serde::Serialize)]
@@ -1741,10 +1743,12 @@ pub async fn recording_start(
     }
 
     // Pre-check the configured provider's prerequisites — without them
-    // transcription always fails silently. Resolve the note's language up
-    // front too: local_model_path uses it to decide whether a language
-    // addon (e.g. NB Whisper for Norwegian) overrides the active primary.
-    let provider_cfg = read_provider_config(&state)
+    // transcription always fails silently. Resolve the per-language
+    // override (if any) up front: both the prereq check and the prewarm
+    // path use the resolved provider — otherwise a user with a Norwegian
+    // override (Local) and an English default (Deepgram) would prewarm
+    // the wrong model when starting an English meeting.
+    let transcribe_cfg = read_transcribe_config(&state)
         .map_err(|e| e.to_string())?;
     let language = {
         let conn = state.db.lock();
@@ -1756,6 +1760,7 @@ pub async fn recording_start(
             .unwrap_or_default();
         if note_lang.trim().is_empty() { global } else { note_lang }
     };
+    let provider_cfg = transcribe_cfg.resolve(&language).clone();
     // Each cloud provider has its own Keychain slot. Look up the right
     // one based on the active provider so the prerequisite check doesn't
     // pass when (e.g.) the user picked Deepgram but only saved an OpenAI
@@ -3534,14 +3539,10 @@ async fn transcribe_chunk(
     path: PathBuf,
     start_ms: u64,
 ) -> anyhow::Result<()> {
-    // Resolve dispatch-time data: provider config (migrated from legacy keys
-    // on first read), per-note-or-global language, custom vocabulary, and
-    // the API key (Keychain — kept outside the DB lock; local providers
-    // don't need it).
-    let provider_cfg = {
-        let state: State<AppState> = app.state();
-        read_provider_config(&state)?
-    };
+    // Resolve dispatch-time data: per-note-or-global language first
+    // (drives per-language override resolution), then the resolved
+    // provider config, then custom vocabulary + API key. The order
+    // matters — provider_cfg depends on language for the resolve.
     let (language, vocabulary) = {
         let state: State<AppState> = app.state();
         let conn = state.db.lock();
@@ -3558,6 +3559,10 @@ async fn transcribe_chunk(
         let vocabulary = db::get_setting(&conn, "custom_vocabulary")?
             .unwrap_or_default();
         (language, vocabulary)
+    };
+    let provider_cfg = {
+        let state: State<AppState> = app.state();
+        read_transcribe_config(&state)?.resolve(&language).clone()
     };
     // Look up the API key for the *active* provider, not just OpenAI.
     // Phase 1 had only one cloud provider so a single Keychain slot was

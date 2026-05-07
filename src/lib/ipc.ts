@@ -54,16 +54,24 @@ export type SettingsKey =
 
 export type TranscribeProvider = "openai" | "local" | "deepgram" | "groq";
 
-/// Mirror of the Rust `crate::stt::ProviderConfig` tagged union. Used by
-/// `setProviderConfig` so the backend can deserialize directly without
-/// the frontend touching legacy flat keys. Phase 2: emitted alongside
-/// legacy-key writes for forward compatibility; Phase 3 will retire the
-/// legacy keys.
+// Mirror of the Rust `crate::stt::ProviderConfig` tagged union. The four
+// variants match the four supported STT providers; `local` carries the
+// extra preset + GPU fields it needs.
 export type ProviderConfig =
   | { provider: "openai"; model: string; base_url?: string }
   | { provider: "local"; model_id: string; preset: string; use_gpu: boolean }
   | { provider: "deepgram"; model: string; base_url?: string }
   | { provider: "groq"; model: string };
+
+// Mirror of the Rust `crate::stt::TranscribeConfig`. Wraps a default
+// ProviderConfig plus a map of per-language overrides keyed by ISO 639-1
+// code (matching Note.language and the global `language` setting).
+// Resolution at recording time: per_language[lang] ?? default. The "auto"
+// pseudo-language always resolves to default.
+export type TranscribeConfig = {
+  default: ProviderConfig;
+  per_language: Record<string, ProviderConfig>;
+};
 
 export type SummaryPrompt = {
   id: string;
@@ -196,9 +204,9 @@ export const ipc = {
     invoke<{ ok: boolean; status: number; error: string | null }>("provider_key_test", {
       provider,
     }),
-  getProviderConfig: () => invoke<ProviderConfig>("get_provider_config"),
-  setProviderConfig: (config: ProviderConfig) =>
-    invoke<void>("set_provider_config", { config }),
+  getTranscribeConfig: () => invoke<TranscribeConfig>("get_transcribe_config"),
+  setTranscribeConfig: (config: TranscribeConfig) =>
+    invoke<void>("set_transcribe_config", { config }),
 
   localWhisperModels: () =>
     invoke<LocalWhisperModelStatus[]>("local_whisper_models"),
