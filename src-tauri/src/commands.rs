@@ -169,17 +169,6 @@ fn set_provider_api_key(
     Ok(())
 }
 
-/// Phase-1 compatibility shim. Keep existing call sites working; new
-/// sites should call `read_provider_api_key` directly.
-fn read_openai_api_key(state: &State<AppState>) -> Result<Option<String>, String> {
-    read_provider_api_key(state, "openai")
-}
-
-/// Phase-1 compatibility shim. Keep existing call sites working.
-fn set_openai_api_key(state: &State<AppState>, key: &str) -> Result<(), String> {
-    set_provider_api_key(state, "openai", key)
-}
-
 fn err<E: std::fmt::Display>(e: E) -> String { e.to_string() }
 
 #[tauri::command]
@@ -1080,12 +1069,12 @@ pub fn summary_prompts_delete(state: State<AppState>, id: String) -> Result<(), 
 
 #[tauri::command]
 pub fn api_key_get(state: State<AppState>) -> Result<Option<String>, String> {
-    Ok(read_openai_api_key(&state)?.map(|_| "stored".to_string()))
+    Ok(read_provider_api_key(&state, "openai")?.map(|_| "stored".to_string()))
 }
 
 #[tauri::command]
 pub fn api_key_set(state: State<AppState>, key: String) -> Result<(), String> {
-    set_openai_api_key(&state, &key)
+    set_provider_api_key(&state, "openai", &key)
 }
 
 #[derive(serde::Serialize)]
@@ -1097,7 +1086,8 @@ pub struct TestResult {
 
 #[tauri::command]
 pub async fn api_key_test(state: State<'_, AppState>) -> Result<TestResult, String> {
-    let key = read_openai_api_key(&state)?.ok_or_else(|| "No API key stored".to_string())?;
+    let key = read_provider_api_key(&state, "openai")?
+        .ok_or_else(|| "No API key stored".to_string())?;
 
     let r = openai::client()
         .get(format!("{}/models", openai::BASE))
@@ -3990,7 +3980,7 @@ async fn run_summary(app: AppHandle, note_id: String) -> anyhow::Result<()> {
     let state: State<AppState> = app.state();
     // Read the API key out of band — keychain lookup shouldn't sit
     // inside the DB lock that resolve_provider takes.
-    let openai_api_key = read_openai_api_key(&state)
+    let openai_api_key = read_provider_api_key(&state, "openai")
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let (provider, custom_prompt, language, note) = {
         let conn = state.db.lock();
