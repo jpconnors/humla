@@ -1067,42 +1067,11 @@ pub fn summary_prompts_delete(state: State<AppState>, id: String) -> Result<(), 
     db::delete_summary_prompt(&conn, &id).map_err(err)
 }
 
-#[tauri::command]
-pub fn api_key_get(state: State<AppState>) -> Result<Option<String>, String> {
-    Ok(read_provider_api_key(&state, "openai")?.map(|_| "stored".to_string()))
-}
-
-#[tauri::command]
-pub fn api_key_set(state: State<AppState>, key: String) -> Result<(), String> {
-    set_provider_api_key(&state, "openai", &key)
-}
-
 #[derive(serde::Serialize)]
 pub struct TestResult {
     ok: bool,
     status: u16,
     error: Option<String>,
-}
-
-#[tauri::command]
-pub async fn api_key_test(state: State<'_, AppState>) -> Result<TestResult, String> {
-    let key = read_provider_api_key(&state, "openai")?
-        .ok_or_else(|| "No API key stored".to_string())?;
-
-    let r = openai::client()
-        .get(format!("{}/models", openai::BASE))
-        .bearer_auth(&key)
-        .send()
-        .await
-        .map_err(|e| format!("network: {e}"))?;
-
-    let status = r.status();
-    if status.is_success() {
-        return Ok(TestResult { ok: true, status: status.as_u16(), error: None });
-    }
-    let body = r.text().await.unwrap_or_default();
-    let snippet: String = body.chars().take(300).collect();
-    Ok(TestResult { ok: false, status: status.as_u16(), error: Some(snippet) })
 }
 
 /// Persist a typed `ProviderConfig` to settings. Frontend writes this

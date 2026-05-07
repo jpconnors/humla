@@ -43,7 +43,7 @@ export function useSettings() {
     let cancelled = false;
     (async () => {
       const [k1, kdg, kgrq, models, ds, ss] = await Promise.all([
-        ipc.getApiKey(),
+        ipc.getProviderKey("openai").catch(() => null),
         ipc.getProviderKey("deepgram").catch(() => null),
         ipc.getProviderKey("groq").catch(() => null),
         ipc.localWhisperModels(),

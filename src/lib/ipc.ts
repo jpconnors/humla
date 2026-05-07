@@ -195,11 +195,6 @@ export const ipc = {
   summaryPromptsDelete: (id: string) =>
     invoke<void>("summary_prompts_delete", { id }),
 
-  getApiKey: () => invoke<string | null>("api_key_get"),
-  setApiKey: (key: string) => invoke<void>("api_key_set", { key }),
-  testApiKey: () => invoke<{ ok: boolean; status: number; error: string | null }>("api_key_test"),
-  // Phase-2 generic surface. Use these for new providers; the api_key_*
-  // shims above stay for compat but resolve to the same Keychain slot.
   getProviderKey: (provider: TranscribeProvider) =>
     invoke<string | null>("provider_key_get", { provider }),
   setProviderKey: (provider: TranscribeProvider, key: string) =>
