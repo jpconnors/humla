@@ -91,7 +91,10 @@ The defaults are designed so nothing leaves your machine unless you tell it to.
 
 - **No backend, no telemetry.** Humla doesn't phone home. The only outbound traffic is to the API endpoints you've explicitly configured.
 - **Your notes and transcripts** live in a single SQLite database at `~/Library/Application Support/no.humla.app/`.
-- **Audio chunks** are written to a per-recording temp directory and deleted ~30 seconds after you stop. Optionally keep them via Settings → Audio retention.
+- **Recorded audio:**
+  - During the recording, audio is held in a per-recording temp directory.
+  - After you stop, Humla saves a mixed `playback.wav` per note to `~/Library/Application Support/no.humla.app/recordings/<note_id>/` so you can play the meeting back with word-by-word transcript highlight. The temp directory is then deleted.
+  - The raw per-source streams (separate mic + system WAVs) are *not* kept by default. Turn on Settings → Audio retention to keep those too — useful for re-running diarization at different thresholds.
 - **API keys** are stored in the macOS **Keychain** (one entry per provider — OpenAI, Deepgram, Groq), not in plaintext on disk.
 - **Model downloads** are one-time fetches from HuggingFace; the files live in `~/Library/Application Support/no.humla.app/models/` and `~/Library/Application Support/FluidAudio/Models/`.
 
