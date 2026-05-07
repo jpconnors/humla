@@ -17,7 +17,6 @@ import {
   type KeyState,
   type LlmModelsState,
   type LocalState,
-  type Provider,
 } from "./types";
 
 // One hook to own every piece of Settings page state plus the handlers
@@ -38,17 +37,22 @@ export function useSettings() {
   const [sortformer, setSortformer] = useState<DiarizeState>(EMPTY_DIARIZE_STATE);
   const [llmModels, setLlmModels] = useState<LlmModelsState>(EMPTY_LLM_MODELS_STATE);
   const [s, setS] = useState<Record<EditableKey, string>>(DEFAULTS);
+  const [providerConfig, setProviderConfig] = useState<ProviderConfig>({
+    provider: "openai",
+    model: "whisper-1",
+  });
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [k1, kdg, kgrq, models, ds, ss] = await Promise.all([
+      const [k1, kdg, kgrq, models, ds, ss, cfg] = await Promise.all([
         ipc.getProviderKey("openai").catch(() => null),
         ipc.getProviderKey("deepgram").catch(() => null),
         ipc.getProviderKey("groq").catch(() => null),
         ipc.localWhisperModels(),
         ipc.diarizeStatus("community1").catch(() => null),
         ipc.diarizeStatus("sortformer").catch(() => null),
+        ipc.getProviderConfig().catch(() => null),
       ]);
       if (cancelled) return;
       setOpenaiKey((p) => ({ ...p, hasKey: !!k1 }));
@@ -57,6 +61,7 @@ export function useSettings() {
       setLocal((p) => ({ ...p, models }));
       setDiarize((p) => ({ ...p, status: ds }));
       setSortformer((p) => ({ ...p, status: ss }));
+      if (cfg) setProviderConfig(cfg);
       const entries = await Promise.all(
         (Object.keys(DEFAULTS) as EditableKey[]).map(
           async (key) => [key, (await ipc.getSetting(key)) ?? DEFAULTS[key]] as const,
@@ -191,12 +196,15 @@ export function useSettings() {
       });
       // First downloaded primary auto-becomes active. Addons never become
       // the active primary — they auto-apply via language match instead.
+      // Only fires when the user is on the local provider; otherwise
+      // we don't silently switch them.
       const downloadedInfo = models.find((m) => m.id === modelId);
       if (
         downloadedInfo?.kind === "primary" &&
-        models.filter((m) => m.kind === "primary" && m.downloaded).length === 1
+        models.filter((m) => m.kind === "primary" && m.downloaded).length === 1 &&
+        providerConfig.provider === "local"
       ) {
-        await update("local_whisper_model", modelId);
+        await updateProviderConfig({ ...providerConfig, model_id: modelId });
       }
       const label = models.find((m) => m.id === modelId)?.label ?? modelId;
       flashLocal(`${label} downloaded`);
@@ -220,11 +228,14 @@ export function useSettings() {
       // If the deleted model was the active primary, fall back to the
       // first still-downloaded primary (or the registry default if none).
       // Addons aren't candidates — they're auto-applied, not user-active.
-      if (s.local_whisper_model === modelId) {
+      if (
+        providerConfig.provider === "local" &&
+        providerConfig.model_id === modelId
+      ) {
         const fallback =
           models.find((m) => m.kind === "primary" && m.downloaded)?.id ??
-          DEFAULTS.local_whisper_model;
-        await update("local_whisper_model", fallback);
+          "large-v3-turbo-q5";
+        await updateProviderConfig({ ...providerConfig, model_id: fallback });
       }
     } catch (e) {
       setLocal((p) => ({ ...p, error: String(e) }));
@@ -344,44 +355,14 @@ export function useSettings() {
   async function update(key: EditableKey, value: string) {
     setS((prev) => ({ ...prev, [key]: value }));
     await ipc.setSetting(key, value);
-    // Phase 2: keep typed transcribe_config in sync with legacy keys for
-    // any setting that affects provider choice, so a future Phase 3 that
-    // retires the legacy keys finds a valid typed config already on disk.
-    if (TRANSCRIBE_KEYS.has(key)) {
-      const next = { ...s, [key]: value };
-      const cfg = buildProviderConfig(next as Record<EditableKey, string>);
-      if (cfg) {
-        try {
-          await ipc.setProviderConfig(cfg);
-        } catch (e) {
-          // Non-fatal: legacy keys still work. Log so anyone debugging
-          // a stale typed cache notices.
-          console.warn("[settings] setProviderConfig failed:", e);
-        }
-      }
-    }
   }
 
-  /// Build a typed ProviderConfig from the current legacy-key state.
-  /// Returns null if the chosen provider's required keys are missing.
-  function buildProviderConfig(
-    snapshot: Record<EditableKey, string>,
-  ): ProviderConfig | null {
-    const provider = (snapshot.transcribe_provider || "openai") as Provider;
-    switch (provider) {
-      case "openai":
-        return { provider: "openai", model: snapshot.transcribe_model };
-      case "local":
-        return {
-          provider: "local",
-          model_id: snapshot.local_whisper_model,
-          preset: snapshot.whisper_preset,
-          use_gpu: snapshot.local_whisper_use_gpu !== "false",
-        };
-      case "deepgram":
-        return { provider: "deepgram", model: snapshot.deepgram_model };
-      case "groq":
-        return { provider: "groq", model: snapshot.groq_model };
+  async function updateProviderConfig(cfg: ProviderConfig) {
+    setProviderConfig(cfg);
+    try {
+      await ipc.setProviderConfig(cfg);
+    } catch (e) {
+      console.warn("[settings] setProviderConfig failed:", e);
     }
   }
 
@@ -424,23 +405,13 @@ export function useSettings() {
     }
   }
 
-  // Phase-1 compat shims. Keep the existing OpenAI Settings tab working
-  // by delegating to the generic provider helpers.
-  async function saveKey() {
-    await saveProviderKey("openai");
-  }
-
-  async function testKey() {
-    await testProviderKey("openai");
-  }
-
   return {
     s,
     update,
+    providerConfig,
+    updateProviderConfig,
     openaiKey,
     setOpenaiKey,
-    saveKey,
-    testKey,
     deepgramKey,
     setDeepgramKey,
     groqKey,
@@ -460,18 +431,5 @@ export function useSettings() {
     refreshLlmModels,
   };
 }
-
-// Settings keys that, when changed, should trigger a re-write of the
-// typed `transcribe_config` so the typed cache stays in sync with the
-// legacy flat keys. Each provider's per-model key is in here too.
-const TRANSCRIBE_KEYS = new Set<EditableKey>([
-  "transcribe_provider",
-  "transcribe_model",
-  "whisper_preset",
-  "local_whisper_model",
-  "local_whisper_use_gpu",
-  "deepgram_model",
-  "groq_model",
-]);
 
 export type SettingsHook = ReturnType<typeof useSettings>;
