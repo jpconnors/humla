@@ -4,6 +4,7 @@ import {
   onDiarizeDownloadProgress,
   onLocalWhisperProgress,
   type ProviderConfig,
+  type TranscribeConfig,
   type TranscribeProvider,
 } from "../../lib/ipc";
 import {
@@ -37,9 +38,9 @@ export function useSettings() {
   const [sortformer, setSortformer] = useState<DiarizeState>(EMPTY_DIARIZE_STATE);
   const [llmModels, setLlmModels] = useState<LlmModelsState>(EMPTY_LLM_MODELS_STATE);
   const [s, setS] = useState<Record<EditableKey, string>>(DEFAULTS);
-  const [providerConfig, setProviderConfig] = useState<ProviderConfig>({
-    provider: "openai",
-    model: "whisper-1",
+  const [transcribeConfig, setTranscribeConfig] = useState<TranscribeConfig>({
+    default: { provider: "openai", model: "whisper-1" },
+    per_language: {},
   });
 
   useEffect(() => {
@@ -52,7 +53,7 @@ export function useSettings() {
         ipc.localWhisperModels(),
         ipc.diarizeStatus("community1").catch(() => null),
         ipc.diarizeStatus("sortformer").catch(() => null),
-        ipc.getProviderConfig().catch(() => null),
+        ipc.getTranscribeConfig().catch(() => null),
       ]);
       if (cancelled) return;
       setOpenaiKey((p) => ({ ...p, hasKey: !!k1 }));
@@ -61,7 +62,7 @@ export function useSettings() {
       setLocal((p) => ({ ...p, models }));
       setDiarize((p) => ({ ...p, status: ds }));
       setSortformer((p) => ({ ...p, status: ss }));
-      if (cfg) setProviderConfig(cfg);
+      if (cfg) setTranscribeConfig(cfg);
       const entries = await Promise.all(
         (Object.keys(DEFAULTS) as EditableKey[]).map(
           async (key) => [key, (await ipc.getSetting(key)) ?? DEFAULTS[key]] as const,
@@ -194,17 +195,20 @@ export function useSettings() {
         delete next[modelId];
         return { models, downloading: next, error: null, flash: null };
       });
-      // First downloaded primary auto-becomes active. Addons never become
-      // the active primary — they auto-apply via language match instead.
-      // Only fires when the user is on the local provider; otherwise
-      // we don't silently switch them.
+      // First downloaded multilingual auto-becomes the default's
+      // model_id. Language-specific models never become the default;
+      // they're picked via per-language overrides. Only fires when the
+      // user is on the local provider.
       const downloadedInfo = models.find((m) => m.id === modelId);
       if (
         downloadedInfo?.kind === "multilingual" &&
         models.filter((m) => m.kind === "multilingual" && m.downloaded).length === 1 &&
-        providerConfig.provider === "local"
+        transcribeConfig.default.provider === "local"
       ) {
-        await updateProviderConfig({ ...providerConfig, model_id: modelId });
+        await setDefaultConfig({
+          ...transcribeConfig.default,
+          model_id: modelId,
+        });
       }
       const label = models.find((m) => m.id === modelId)?.label ?? modelId;
       flashLocal(`${label} downloaded`);
@@ -225,17 +229,21 @@ export function useSettings() {
       const models = await ipc.localWhisperModels();
       setLocal((p) => ({ ...p, models, error: null, flash: null }));
       flashLocal(before ? `Deleted ${before.label}` : "Whisper model deleted");
-      // If the deleted model was the active primary, fall back to the
-      // first still-downloaded primary (or the registry default if none).
-      // Addons aren't candidates — they're auto-applied, not user-active.
+      // If the deleted model was the default's model_id, fall back to
+      // the first still-downloaded multilingual (or the registry default
+      // if none). Language-specific entries aren't candidates here —
+      // they're picked via per-language overrides.
       if (
-        providerConfig.provider === "local" &&
-        providerConfig.model_id === modelId
+        transcribeConfig.default.provider === "local" &&
+        transcribeConfig.default.model_id === modelId
       ) {
         const fallback =
           models.find((m) => m.kind === "multilingual" && m.downloaded)?.id ??
           "large-v3-turbo-q5";
-        await updateProviderConfig({ ...providerConfig, model_id: fallback });
+        await setDefaultConfig({
+          ...transcribeConfig.default,
+          model_id: fallback,
+        });
       }
     } catch (e) {
       setLocal((p) => ({ ...p, error: String(e) }));
@@ -357,13 +365,36 @@ export function useSettings() {
     await ipc.setSetting(key, value);
   }
 
-  async function updateProviderConfig(cfg: ProviderConfig) {
-    setProviderConfig(cfg);
+  async function updateTranscribeConfig(cfg: TranscribeConfig) {
+    setTranscribeConfig(cfg);
     try {
-      await ipc.setProviderConfig(cfg);
+      await ipc.setTranscribeConfig(cfg);
     } catch (e) {
-      console.warn("[settings] setProviderConfig failed:", e);
+      console.warn("[settings] setTranscribeConfig failed:", e);
     }
+  }
+
+  // Convenience for the Default provider section. Only mutates the
+  // `default` slot; per-language overrides untouched.
+  async function setDefaultConfig(cfg: ProviderConfig) {
+    await updateTranscribeConfig({ ...transcribeConfig, default: cfg });
+  }
+
+  // Add or replace a per-language override.
+  async function setLanguageOverride(language: string, cfg: ProviderConfig) {
+    await updateTranscribeConfig({
+      ...transcribeConfig,
+      per_language: { ...transcribeConfig.per_language, [language]: cfg },
+    });
+  }
+
+  // Remove a per-language override entirely. No-op if the language
+  // isn't currently mapped.
+  async function removeLanguageOverride(language: string) {
+    if (!(language in transcribeConfig.per_language)) return;
+    const next = { ...transcribeConfig.per_language };
+    delete next[language];
+    await updateTranscribeConfig({ ...transcribeConfig, per_language: next });
   }
 
   async function saveProviderKey(provider: TranscribeProvider) {
@@ -408,8 +439,11 @@ export function useSettings() {
   return {
     s,
     update,
-    providerConfig,
-    updateProviderConfig,
+    transcribeConfig,
+    updateTranscribeConfig,
+    setDefaultConfig,
+    setLanguageOverride,
+    removeLanguageOverride,
     openaiKey,
     setOpenaiKey,
     deepgramKey,
