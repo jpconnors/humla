@@ -24,8 +24,10 @@ export function Settings() {
             <TranscriptionTab
               s={settings.s}
               update={settings.update}
-              providerConfig={settings.providerConfig}
-              updateProviderConfig={settings.updateProviderConfig}
+              transcribeConfig={settings.transcribeConfig}
+              setDefaultConfig={settings.setDefaultConfig}
+              setLanguageOverride={settings.setLanguageOverride}
+              removeLanguageOverride={settings.removeLanguageOverride}
               local={settings.local}
               downloadModel={settings.downloadModel}
               deleteModel={settings.deleteModel}

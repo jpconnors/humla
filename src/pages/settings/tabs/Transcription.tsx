@@ -1,25 +1,19 @@
 import { DiarizeModelManager } from "../components/DiarizeModelManager";
 import { LocalModelManager } from "../components/LocalModelManager";
+import { PerLanguageOverrides } from "../components/PerLanguageOverrides";
+import { ProviderConfigForm } from "../components/ProviderConfigForm";
 import { Row, Section } from "../components/Section";
-import { Select } from "../components/Select";
 import { useDeveloperMode } from "../../../lib/useDeveloperMode";
-import {
-  DEEPGRAM_MODELS,
-  GROQ_MODELS,
-  LOCAL_PROVIDER,
-  PROVIDERS_BASE,
-  TRANSCRIBE_MODELS,
-  WHISPER_PRESETS,
-  inputClass,
-  type Provider,
-} from "../types";
+import { inputClass } from "../types";
 import type { SettingsHook } from "../useSettings";
 
 export function TranscriptionTab({
   s,
   update,
-  providerConfig,
-  updateProviderConfig,
+  transcribeConfig,
+  setDefaultConfig,
+  setLanguageOverride,
+  removeLanguageOverride,
   local,
   downloadModel,
   deleteModel,
@@ -33,8 +27,10 @@ export function TranscriptionTab({
   SettingsHook,
   | "s"
   | "update"
-  | "providerConfig"
-  | "updateProviderConfig"
+  | "transcribeConfig"
+  | "setDefaultConfig"
+  | "setLanguageOverride"
+  | "removeLanguageOverride"
   | "local"
   | "downloadModel"
   | "deleteModel"
@@ -45,161 +41,76 @@ export function TranscriptionTab({
   | "downloadSortformer"
   | "deleteSortformer"
 >) {
-  const provider = providerConfig.provider;
   const devMode = useDeveloperMode();
+  const def = transcribeConfig.default;
 
   return (
     <>
-      <Section title="Provider">
-        <Row label="Source">
-          <Select
-            value={provider}
-            onChange={(v) => {
-              const p = v as Provider;
-              if (p === "openai") {
-                updateProviderConfig({ provider: "openai", model: "whisper-1" });
-              } else if (p === "local") {
-                updateProviderConfig({
-                  provider: "local",
-                  model_id:
-                    local.models.find((m) => m.kind === "multilingual" && m.downloaded)
-                      ?.id ?? "large-v3-turbo-q5",
-                  preset: "quality",
-                  use_gpu: true,
-                });
-              } else if (p === "deepgram") {
-                updateProviderConfig({ provider: "deepgram", model: "nova-3" });
-              } else if (p === "groq") {
-                updateProviderConfig({
-                  provider: "groq",
-                  model: "whisper-large-v3-turbo",
-                });
-              }
-            }}
-            options={
-              local.models.some((m) => m.downloaded)
-                ? [...PROVIDERS_BASE, LOCAL_PROVIDER]
-                : PROVIDERS_BASE
-            }
+      <Section title="Default provider">
+        <Row label="Active">
+          <ProviderConfigForm
+            value={def}
+            onChange={setDefaultConfig}
+            localModels={local.models}
           />
-          {provider === "local" && !local.models.some((m) => m.downloaded) && (
+          {def.provider === "local" && !local.models.some((m) => m.downloaded) && (
             <p className="text-xs text-red-600 dark:text-red-400 mt-2">
               No local model is downloaded. Download one below before recording.
             </p>
           )}
-        </Row>
-        {providerConfig.provider === "openai" && (
-          <Row label="Model">
-            <Select
-              value={providerConfig.model}
-              onChange={(v) =>
-                updateProviderConfig({ provider: "openai", model: v })
-              }
-              options={TRANSCRIBE_MODELS.map((m) => ({ value: m, label: m }))}
-            />
-            {providerConfig.model === "gpt-4o-transcribe-diarize" && (
-              <p className="text-xs text-[var(--color-text-muted)] mt-2">
-                Note: <code>gpt-4o-transcribe-diarize</code> treats the
-                language setting as a hint and does not accept a biasing
-                prompt. For strict language locking, use{" "}
-                <code>whisper-1</code> or <code>gpt-4o-transcribe</code>.
-              </p>
-            )}
-          </Row>
-        )}
-        {providerConfig.provider === "deepgram" && (
-          <Row label="Model">
-            <Select
-              value={providerConfig.model}
-              onChange={(v) =>
-                updateProviderConfig({ provider: "deepgram", model: v })
-              }
-              options={DEEPGRAM_MODELS.map((m) => ({ value: m, label: m }))}
-            />
+          {def.provider === "openai" && def.model === "gpt-4o-transcribe-diarize" && (
+            <p className="text-xs text-[var(--color-text-muted)] mt-2">
+              Note: <code>gpt-4o-transcribe-diarize</code> treats the
+              language setting as a hint and does not accept a biasing
+              prompt. For strict language locking, use{" "}
+              <code>whisper-1</code> or <code>gpt-4o-transcribe</code>.
+            </p>
+          )}
+          {def.provider === "deepgram" && (
             <p className="text-xs text-[var(--color-text-muted)] mt-2">
               <code>nova-3</code> is the current best for English; falls
-              back gracefully to other languages. Word timestamps and
-              vocabulary biasing (via <code>keywords</code> param) work on
-              every model. Add your Deepgram API key under Settings → API
-              keys.
+              back gracefully to other languages. Add your Deepgram API
+              key under Settings → API keys.
             </p>
-          </Row>
-        )}
-        {providerConfig.provider === "groq" && (
-          <Row label="Model">
-            <Select
-              value={providerConfig.model}
-              onChange={(v) =>
-                updateProviderConfig({ provider: "groq", model: v })
-              }
-              options={GROQ_MODELS.map((m) => ({ value: m, label: m }))}
-            />
+          )}
+          {def.provider === "groq" && (
             <p className="text-xs text-[var(--color-text-muted)] mt-2">
               Groq hosts <code>whisper-large-v3-turbo</code> at OpenAI-
               compatible endpoints — same Whisper quality, ~10× cheaper
               and faster than OpenAI's hosted Whisper. Add your Groq API
               key under Settings → API keys.
             </p>
-          </Row>
-        )}
+          )}
+        </Row>
       </Section>
 
-      {providerConfig.provider === "local" && (
-        <Section title="Local model behaviour">
-          <Row label="Quality preset">
-            <Select
-              value={providerConfig.preset}
-              onChange={(v) =>
-                updateProviderConfig({ ...providerConfig, preset: v })
-              }
-              options={WHISPER_PRESETS}
-            />
-            <p className="text-xs text-[var(--color-text-muted)] mt-2">
-              Trades latency for accuracy. Quality runs beam search with
-              an aggressive no-speech threshold so almost no segments are
-              silently dropped — best for meetings and dense speech. Fast
-              falls back to greedy decoding for live-caption snappiness.
-            </p>
-          </Row>
-          <Row label="GPU acceleration">
-            <label className="flex items-center gap-2 cursor-pointer text-sm">
-              <input
-                type="checkbox"
-                checked={providerConfig.use_gpu}
-                onChange={(e) =>
-                  updateProviderConfig({
-                    ...providerConfig,
-                    use_gpu: e.target.checked,
-                  })
-                }
-              />
-              Use Metal (Apple GPU) for Whisper inference
-            </label>
-            <p className="text-xs text-[var(--color-text-muted)] mt-2">
-              On by default — gives ~10× speedup over CPU on Apple
-              Silicon. Turn off if Whisper logs Metal compile errors
-              like <code>ggml_backend_metal_init: failed to allocate
-              context</code>; the app falls back to CPU/BLAS, which is
-              slower but reliable.
-            </p>
-          </Row>
-        </Section>
-      )}
+      <Section title="Per-language overrides">
+        <Row label="Overrides">
+          <PerLanguageOverrides
+            config={transcribeConfig}
+            setLanguageOverride={setLanguageOverride}
+            removeLanguageOverride={removeLanguageOverride}
+            local={local}
+          />
+        </Row>
+      </Section>
 
       <Section title="Local models">
         <LocalModelManager
           state={local}
-          activeId={
-            providerConfig.provider === "local" ? providerConfig.model_id : ""
-          }
+          activeId={def.provider === "local" ? def.model_id : ""}
           language={s.language}
           onDownload={downloadModel}
           onDelete={deleteModel}
           onSelect={(id) => {
-            if (providerConfig.provider === "local") {
-              updateProviderConfig({ ...providerConfig, model_id: id });
+            // Selecting a local model from the manager pins it as the
+            // default's model_id. If currently on a non-local default,
+            // switch them to Local with this model — matches the v0.23
+            // implicit behaviour of the radio button.
+            if (def.provider === "local") {
+              setDefaultConfig({ ...def, model_id: id });
             } else {
-              updateProviderConfig({
+              setDefaultConfig({
                 provider: "local",
                 model_id: id,
                 preset: "quality",
