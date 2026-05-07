@@ -1064,10 +1064,19 @@ pub struct TestResult {
     error: Option<String>,
 }
 
+/// Read the active STT provider config. The Settings UI uses this on
+/// mount as the single source of truth instead of reading the legacy
+/// flat keys (which v0.23 deleted via `db::migrate_transcribe_config`).
+#[tauri::command]
+pub fn get_provider_config(
+    state: State<AppState>,
+) -> Result<crate::stt::ProviderConfig, String> {
+    read_provider_config(&state).map_err(|e| e.to_string())
+}
+
 /// Persist a typed `ProviderConfig` to settings. Frontend writes this
-/// instead of three separate flat-key updates so the choice is atomic.
-/// `read_provider_config` reads this back in preference to the legacy
-/// `transcribe_provider` / `transcribe_model` / `whisper_preset` keys.
+/// instead of multiple flat-key updates so the choice is atomic.
+/// `read_provider_config` reads this back as the canonical source.
 #[tauri::command]
 pub fn set_provider_config(
     state: State<AppState>,
@@ -1412,39 +1421,24 @@ fn local_model_path(
     Ok(dir.join(local_whisper::default_model().filename))
 }
 
-/// Read the active STT provider config. Prefers the typed
-/// `transcribe_config` JSON (written by `set_provider_config` from the
-/// settings UI). Falls back to the Phase-1 legacy flat keys
-/// (`transcribe_provider`, `transcribe_model`, `local_whisper_model`,
-/// `whisper_preset`, `local_whisper_use_gpu`) when typed config is
-/// missing or corrupt — keeps existing installs working through the
-/// migration window.
+/// Read the active STT provider config from the typed `transcribe_config`
+/// JSON. Falls back to a hardcoded OpenAI / whisper-1 default when the
+/// row is absent or corrupt — same shape that `from_legacy_settings`
+/// produces with all-None inputs, so behaviour matches a fresh install.
+/// The startup migration (`db::migrate_transcribe_config`) ensures the
+/// row is always present after one launch under v0.23+, so the fallback
+/// is purely defensive.
 fn read_provider_config(state: &State<AppState>) -> anyhow::Result<crate::stt::ProviderConfig> {
     let conn = state.db.lock();
     if let Some(json) = db::get_setting(&conn, "transcribe_config")? {
         if let Ok(cfg) = serde_json::from_str::<crate::stt::ProviderConfig>(&json) {
             return Ok(cfg);
         }
-        // Corrupted JSON — fall through to legacy reconstruction so the
-        // user isn't locked out over a malformed cache.
+        // Corrupted JSON — fall through to the default rather than locking
+        // the user out over a malformed cache. Settings UI overwrites
+        // this when the user opens the Transcription tab.
     }
-    let provider = db::get_setting(&conn, "transcribe_provider")?;
-    let model = db::get_setting(&conn, "transcribe_model")?;
-    let whisper_model = db::get_setting(&conn, "local_whisper_model")?;
-    let whisper_preset = db::get_setting(&conn, "whisper_preset")?;
-    let whisper_use_gpu = db::get_setting(&conn, "local_whisper_use_gpu")?
-        .and_then(|v| match v.as_str() {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        });
-    Ok(crate::stt::from_legacy_settings(
-        provider.as_deref(),
-        model.as_deref(),
-        whisper_model.as_deref(),
-        whisper_preset.as_deref(),
-        whisper_use_gpu,
-    ))
+    Ok(crate::stt::from_legacy_settings(None, None, None, None, None))
 }
 
 #[derive(serde::Serialize)]

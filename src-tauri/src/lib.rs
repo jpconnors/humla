@@ -176,6 +176,7 @@ pub fn run() {
             commands::summary_prompts_create,
             commands::summary_prompts_update,
             commands::summary_prompts_delete,
+            commands::get_provider_config,
             commands::set_provider_config,
             commands::provider_key_get,
             commands::provider_key_set,
