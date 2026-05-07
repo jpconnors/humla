@@ -16,7 +16,7 @@ pub use adapter::{BatchSttAdapter, TranscribeCtx, TranscribeResult, Word};
 pub use auth::Auth;
 pub use config::{
     from_legacy_settings, DeepgramConfig, GroqConfig, LocalWhisperConfig, OpenAiConfig,
-    ProviderConfig,
+    ProviderConfig, TranscribeConfig,
 };
 pub use keychain::{
     keychain_account_for, new_cache, requires_api_key, ApiKeyCache, KEYCHAIN_SERVICE,
