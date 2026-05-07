@@ -4,10 +4,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Calendar,
+  Check,
   ChevronDown,
   ChevronUp,
   Circle,
   Cloud,
+  Copy,
   FileText,
   Folder,
   Languages,
@@ -405,6 +407,19 @@ export function Note() {
               expanded={summaryExpanded}
               onToggle={() => setSummaryExpanded((v) => !v)}
               label="summary"
+              actions={
+                hasSummary ? (
+                  <CopyButton
+                    label="Summary"
+                    // Prefer the saved summary; if a regen is mid-stream and
+                    // the saved version is stale, copy reads the cached
+                    // value the user can see (the streaming view replaces
+                    // it visually but `draft.summary` is the source of
+                    // truth until commit).
+                    getText={() => draft.summary}
+                  />
+                ) : undefined
+              }
             >
               <span>Summary</span>
               {isSummarizing && hasSummary && (
@@ -899,28 +914,84 @@ function CollapsibleHeader({
   onToggle,
   label,
   children,
+  actions,
 }: {
   expanded: boolean;
   onToggle: () => void;
   label: string;
   children: React.ReactNode;
+  // Optional trailing-actions slot rendered between the title content and
+  // the chevron. Use this for buttons that act on the card's content
+  // (e.g. copy summary). The slot is a `<div>`, not a button — pass real
+  // <button>s as children. Nested-button avoidance is why this row uses
+  // role=button on a <div> rather than a true <button> element.
+  actions?: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onToggle}
+      onKeyDown={(e) => {
+        // Only fire for keys hitting the header itself, not actions
+        // nested inside (which handle their own Enter/Space natively).
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
       title={expanded ? `Collapse ${label}` : `Expand ${label}`}
       className="group nd-label mb-4 flex w-full items-center gap-3 cursor-pointer text-left"
     >
       {children}
+      {actions && (
+        <div className="ml-auto flex items-center">
+          {actions}
+        </div>
+      )}
       <span
-        className="ml-auto p-1.5 rounded-md text-[var(--color-text-muted)] transition-colors group-hover:bg-[var(--color-pill-hover)] group-hover:text-[var(--color-text)]"
+        className={
+          (actions ? "" : "ml-auto ") +
+          "p-1.5 rounded-md text-[var(--color-text-muted)] transition-colors group-hover:bg-[var(--color-pill-hover)] group-hover:text-[var(--color-text)]"
+        }
         aria-hidden
       >
         {expanded
           ? <ChevronUp size={16} strokeWidth={1.5} />
           : <ChevronDown size={16} strokeWidth={1.5} />}
       </span>
+    </div>
+  );
+}
+
+// Small copy-to-clipboard button rendered in the Summary card header.
+// 1.5s "Copied" feedback via a Check icon swap. stopPropagation keeps
+// the click from toggling the surrounding header row's collapse state.
+function CopyButton({ getText, label }: { getText: () => string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async (e) => {
+        e.stopPropagation();
+        const text = getText();
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1500);
+        } catch (err) {
+          console.warn("[note] clipboard write failed:", err);
+        }
+      }}
+      title={copied ? `${label} copied` : `Copy ${label}`}
+      aria-label={copied ? `${label} copied` : `Copy ${label}`}
+      className="p-1.5 rounded-md text-[var(--color-text-muted)] hover:bg-[var(--color-pill-hover)] hover:text-[var(--color-text)] transition-colors"
+    >
+      {copied
+        ? <Check size={16} strokeWidth={1.5} />
+        : <Copy size={16} strokeWidth={1.5} />}
     </button>
   );
 }
