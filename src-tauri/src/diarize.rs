@@ -12,6 +12,22 @@ use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+// CREATE_NO_WINDOW for spawning the console-subsystem sidecar without
+// flashing a black window each time. The audio-capture spawn in
+// commands.rs has the same incantation inline; we centralise it here
+// because diarize.rs has four spawn sites (one-shot diarize, status,
+// download, delete) and four copies of the cfg block would just rot.
+fn hide_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 // fluidaudio-rs v0.1.0 advertises diarization but the Rust bindings are
 // stubs — only the underlying FluidAudio Swift package implements it. So
 // we wrap that Swift package in a sidecar binary (`speaker-diarize`) and
@@ -122,6 +138,7 @@ pub async fn diarize_file(
             cmd.arg("--pred-threshold").arg(format!("{t}"));
         }
     }
+    hide_console(&mut cmd);
     let output = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -283,12 +300,14 @@ pub async fn status(app: &AppHandle, engine: Engine) -> Result<ModelStatus> {
             });
         }
     };
-    let output = Command::new(&sidecar)
-        .arg("status")
+    let mut cmd = Command::new(&sidecar);
+    cmd.arg("status")
         .arg("--engine")
         .arg(engine.arg())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_console(&mut cmd);
+    let output = cmd
         .output()
         .await
         .map_err(|e| anyhow!("spawn speaker-diarize status: {e}"))?;
@@ -318,13 +337,15 @@ pub struct DownloadProgress {
 /// FluidAudio's three-phase flow (listing → downloading → compiling).
 pub async fn download(app: &AppHandle, engine: Engine) -> Result<()> {
     let sidecar = sidecar_path(app)?;
-    let mut child = Command::new(&sidecar)
-        .arg("download")
+    let mut cmd = Command::new(&sidecar);
+    cmd.arg("download")
         .arg("--engine")
         .arg(engine.arg())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    hide_console(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| anyhow!("spawn speaker-diarize download: {e}"))?;
 
@@ -382,12 +403,14 @@ pub async fn download(app: &AppHandle, engine: Engine) -> Result<()> {
 
 pub async fn delete(app: &AppHandle, engine: Engine) -> Result<()> {
     let sidecar = sidecar_path(app)?;
-    let output = Command::new(&sidecar)
-        .arg("delete")
+    let mut cmd = Command::new(&sidecar);
+    cmd.arg("delete")
         .arg("--engine")
         .arg(engine.arg())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_console(&mut cmd);
+    let output = cmd
         .output()
         .await
         .map_err(|e| anyhow!("spawn speaker-diarize delete: {e}"))?;
