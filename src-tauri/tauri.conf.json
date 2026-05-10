@@ -33,12 +33,22 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["app", "dmg"],
-    "icon": ["icons/icon.png"],
+    "targets": ["app", "dmg", "nsis"],
+    "icon": ["icons/icon.png", "icons/icon.ico"],
     "macOS": {
       "minimumSystemVersion": "13.0",
       "entitlements": "entitlements.plist",
       "signingIdentity": "Developer ID Application: MICHAEL MEHLUM WILHELMSEN (NBUP88JQ35)"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perUser",
+        "installerIcon": "icons/icon.ico",
+        "languages": ["English", "Norwegian"]
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
     },
     "externalBin": ["binaries/audio-capture", "binaries/speaker-diarize"],
     "resources": {

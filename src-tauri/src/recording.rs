@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::process::Child;
+use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -147,6 +147,12 @@ pub struct ChunkRecord {
 pub struct RecordingSession {
     pub note_id: Option<String>,
     pub child: Option<Child>,
+    // Sidecar stdin handle. Used as the cross-platform pause/resume/stop
+    // IPC channel on Windows — Unix keeps using POSIX signals because the
+    // Swift sidecar listens on SIGUSR1/SIGUSR2/SIGTERM. The Rust Windows
+    // sidecar reads commands ("pause"/"resume"/"stop", newline-delimited)
+    // from this pipe instead.
+    pub child_stdin: Option<ChildStdin>,
     pub temp_dir: Option<PathBuf>,
     pub stop_tx: Option<mpsc::Sender<()>>,
     // Handles for in-flight transcribe tasks. Drained on stop so the

@@ -39,24 +39,20 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // Point GGML at our prebuilt default.metallib BEFORE any
-            // whisper.cpp init runs. whisper-rs 0.13 ships a vendored
-            // ggml whose runtime Metal-source compile path silently
-            // breaks on some macOS setups (whisper.cpp#3009 — sed-
-            // based ggml-common.h embed misfires under cmake), causing
-            // shader compile to fail with `undeclared identifier
-            // 'block_q5_1'` and falling back to BLAS (CPU). With
-            // GGML_METAL_PATH_RESOURCES set to a directory containing
-            // a precompiled `default.metallib`, GGML's loader uses
-            // that instead and skips the broken source path entirely
-            // — restoring full Metal GPU acceleration.
+            // macOS only: point GGML at our prebuilt default.metallib BEFORE
+            // any whisper.cpp init runs. whisper-rs 0.13 ships a vendored
+            // ggml whose runtime Metal-source compile path silently breaks
+            // on some macOS setups (whisper.cpp#3009 — sed-based
+            // ggml-common.h embed misfires under cmake), causing shader
+            // compile to fail with `undeclared identifier 'block_q5_1'` and
+            // falling back to BLAS (CPU). With GGML_METAL_PATH_RESOURCES
+            // set to a directory containing a precompiled `default.metallib`,
+            // GGML's loader uses that instead and skips the broken source
+            // path entirely — restoring full Metal GPU acceleration.
             //
-            // Tauri's bundle config maps `resources/default.metallib`
-            // to <Resources>/default.metallib in production, but in
-            // dev mode the path layout is different — try a couple
-            // of plausible locations and log whichever wins so a
-            // missing metallib is visible in stderr instead of just
-            // silently degrading to BLAS.
+            // On Windows / Linux the GPU backend is Vulkan (or CPU) and
+            // there's no metallib to ship.
+            #[cfg(target_os = "macos")]
             if let Ok(resource_dir) = app.path().resource_dir() {
                 let candidates = [
                     resource_dir.clone(),
@@ -214,24 +210,27 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri app")
         .run(|_app_handle, event| {
-            // Bypass C++ static destructors on quit. whisper.cpp's GGML
-            // Metal backend dispatches a background block during init that
-            // polls via usleep; on app exit, the unique_ptr<ggml_metal_device>
-            // destructor (called from atexit via __cxa_finalize_ranges)
-            // runs ggml_metal_rsets_free, which aborts when those rsets are
-            // still owned by the in-flight init block. Result: every
-            // Cmd+Q after a recording reliably crashes inside ggml_abort
-            // and produces a SIGABRT crash dialog. We don't actually need
-            // C++ destructors to run at exit — the OS reclaims Metal
-            // resources, file descriptors, and process memory anyway, and
-            // our DB writes are synced before this point. _exit(0) skips
-            // atexit entirely and lets the process terminate cleanly.
+            // macOS only: bypass C++ static destructors on quit. whisper.cpp's
+            // GGML Metal backend dispatches a background block during init
+            // that polls via usleep; on app exit, the
+            // unique_ptr<ggml_metal_device> destructor (called from atexit
+            // via __cxa_finalize_ranges) runs ggml_metal_rsets_free, which
+            // aborts when those rsets are still owned by the in-flight init
+            // block. Result: every Cmd+Q after a recording reliably crashes
+            // inside ggml_abort and produces a SIGABRT crash dialog. _exit
+            // skips atexit and lets the process terminate cleanly. Windows
+            // doesn't trip this path (no Metal backend) so let the runtime
+            // shut down normally there.
+            #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Exit = event {
                 unsafe { libc::_exit(0) };
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = event;
         });
 }
 
+#[cfg(target_os = "macos")]
 fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let app_name = app
         .config()
@@ -299,4 +298,54 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
 
     Menu::with_items(app, &[&app_submenu, &edit_submenu, &window_submenu])
+}
+
+// Windows / Linux build a slimmer menu — no per-app submenu (the OS doesn't
+// surface one), no Services/Hide/HideOthers/ShowAll (macOS-only concepts).
+// "Check for Updates…" lives under File so the menu event still has a home.
+#[cfg(not(target_os = "macos"))]
+fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let check_for_updates = MenuItem::with_id(
+        app,
+        "check-for-updates",
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
+    let quit = PredefinedMenuItem::quit(app, None)?;
+    let sep = || PredefinedMenuItem::separator(app);
+
+    let file_submenu = Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[&check_for_updates, &sep()?, &quit],
+    )?;
+
+    let edit_submenu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &sep()?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+
+    let window_submenu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    Menu::with_items(app, &[&file_submenu, &edit_submenu, &window_submenu])
 }

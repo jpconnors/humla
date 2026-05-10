@@ -23,6 +23,10 @@ audio-capture/Package.resolved
 speaker-diarize/.build/
 speaker-diarize/Package.resolved
 
+# Rust sidecar build artifacts (Windows port)
+audio-capture-rs/target/
+speaker-diarize-rs/target/
+
 # Icon pipeline staging
 src-tauri/icons/.app-icon-staged.png
 

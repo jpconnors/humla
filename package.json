@@ -11,7 +11,9 @@
     "tauri": "tauri",
     "icon": "scripts/build-icon.sh",
     "dmg": "scripts/build-dmg.sh",
-    "release": "scripts/release.sh"
+    "release": "scripts/release.sh",
+    "sidecars:windows": "pwsh -File scripts/build-sidecars-windows.ps1",
+    "bundle:windows": "pwsh -File scripts/build-msi.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",

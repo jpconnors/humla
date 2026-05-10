@@ -1637,47 +1637,112 @@ pub async fn permissions_request(app: AppHandle, kind: String) -> Result<Permiss
 
 #[tauri::command]
 pub async fn permissions_open_settings(kind: String) -> Result<(), String> {
-    let url = match kind.as_str() {
-        "microphone" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-        "screen" => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-        _ => return Err("unknown kind".into()),
-    };
-    tokio::process::Command::new("open")
-        .arg(url)
-        .spawn()
-        .map_err(|e| format!("open: {e}"))?
-        .wait()
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    #[cfg(target_os = "macos")]
+    {
+        let url = match kind.as_str() {
+            "microphone" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+            "screen" => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            _ => return Err("unknown kind".into()),
+        };
+        tokio::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("open: {e}"))?
+            .wait()
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Windows surfaces mic privacy at ms-settings:privacy-microphone.
+        // There is no "screen recording" toggle (any process can record the
+        // desktop without a TCC-style prompt) — closest equivalent is the
+        // graphics-capture page, which controls per-app camera-style
+        // capture access for Store apps. We map both to a sensible target.
+        let url = match kind.as_str() {
+            "microphone" => "ms-settings:privacy-microphone",
+            "screen" => "ms-settings:privacy-graphicscapture",
+            _ => return Err("unknown kind".into()),
+        };
+        // `cmd /c start <url>` lets the URL handler resolve ms-settings:.
+        tokio::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|e| format!("start: {e}"))?
+            .wait()
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = kind;
+        Err("permissions_open_settings: unsupported platform".into())
+    }
 }
 
 #[tauri::command]
-pub fn recording_pause(state: State<AppState>) -> Result<(), String> {
-    let s = state.recording.lock();
-    let child = s.child.as_ref().ok_or("not recording")?;
-    let pid = child.id().ok_or("no pid")? as i32;
-    #[cfg(unix)]
-    unsafe {
-        if libc::kill(pid, libc::SIGUSR1) != 0 {
-            return Err(format!("kill: {}", std::io::Error::last_os_error()));
-        }
-    }
-    Ok(())
+pub async fn recording_pause(state: State<'_, AppState>) -> Result<(), String> {
+    send_sidecar_control(&state, "pause", "SIGUSR1").await
 }
 
 #[tauri::command]
-pub fn recording_resume(state: State<AppState>) -> Result<(), String> {
-    let s = state.recording.lock();
-    let child = s.child.as_ref().ok_or("not recording")?;
-    let pid = child.id().ok_or("no pid")? as i32;
+pub async fn recording_resume(state: State<'_, AppState>) -> Result<(), String> {
+    send_sidecar_control(&state, "resume", "SIGUSR2").await
+}
+
+// Cross-platform pause/resume IPC.
+//
+// Unix: send POSIX signal (the Swift sidecar listens on SIGUSR1/SIGUSR2 and
+// invokes its pause/resume handlers from the dispatch source).
+//
+// Windows: write `pause` / `resume` newline-terminated to the sidecar's stdin.
+// The Rust audio-capture sidecar's stdin reader thread parses these and toggles
+// capture. Stdin must have been piped at spawn time (see `recording_start`).
+async fn send_sidecar_control(
+    state: &State<'_, AppState>,
+    stdin_cmd: &str,
+    #[cfg_attr(not(unix), allow(unused_variables))] signal_name: &str,
+) -> Result<(), String> {
     #[cfg(unix)]
-    unsafe {
-        if libc::kill(pid, libc::SIGUSR2) != 0 {
-            return Err(format!("kill: {}", std::io::Error::last_os_error()));
+    {
+        let _ = stdin_cmd; // unused on unix
+        let s = state.recording.lock();
+        let child = s.child.as_ref().ok_or("not recording")?;
+        let pid = child.id().ok_or("no pid")? as i32;
+        let sig = match signal_name {
+            "SIGUSR1" => libc::SIGUSR1,
+            "SIGUSR2" => libc::SIGUSR2,
+            "SIGTERM" => libc::SIGTERM,
+            _ => return Err(format!("unknown signal {signal_name}")),
+        };
+        unsafe {
+            if libc::kill(pid, sig) != 0 {
+                return Err(format!("kill: {}", std::io::Error::last_os_error()));
+            }
         }
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = {
+            let mut s = state.recording.lock();
+            s.child_stdin.take().ok_or("not recording (no stdin)")?
+        };
+        let payload = format!("{stdin_cmd}\n");
+        let res = stdin.write_all(payload.as_bytes()).await;
+        // Put the stdin handle back so subsequent commands can also use it.
+        // If the write failed (broken pipe — sidecar already exited) we drop
+        // the handle on the floor; the next call will return "not recording".
+        if res.is_ok() {
+            let _ = stdin.flush().await;
+            let mut s = state.recording.lock();
+            s.child_stdin = Some(stdin);
+        }
+        res.map_err(|e| format!("stdin write: {e}"))
+    }
 }
 
 #[tauri::command]
@@ -1717,6 +1782,7 @@ pub async fn recording_start(
             }
 
             let stale = s.child.take();
+            s.child_stdin = None;
             s.note_id = None;
             s.temp_dir = None;
             s.reader = None;
@@ -1835,6 +1901,10 @@ pub async fn recording_start(
     cmd.arg("--out").arg(&temp_dir);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Pipe stdin so we can write control commands ("pause"/"resume"/"stop")
+    // to the sidecar. Used as the primary IPC on Windows; harmless on Unix
+    // (the Swift sidecar ignores stdin and we drive it via signals there).
+    cmd.stdin(Stdio::piped());
     cmd.kill_on_drop(true);
     // Detach the child into a new session so macOS TCC doesn't tie its
     // microphone / screen-recording authorization to the parent dev binary.
@@ -1850,10 +1920,22 @@ pub async fn recording_start(
             Ok(())
         });
     }
+    // Windows: hide the sidecar's console window. CREATE_NO_WINDOW is the
+    // standard way to prevent a brief flash of cmd.exe-style window when
+    // spawning a console subsystem child. We never write to the sidecar's
+    // stdout/stderr from a TTY (we're parsing them as JSON), so a window
+    // would just be visual noise.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     let mut child = cmd.spawn().map_err(|e| format!("spawn audio-capture: {e}"))?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
+    let child_stdin = child.stdin.take();
 
     // Drain stderr in the background so the pipe never fills. Only the
     // sidecar's own `humla-error:`-prefixed lines get surfaced to the
@@ -1889,6 +1971,7 @@ pub async fn recording_start(
         let mut s = state.recording.lock();
         s.note_id = Some(note_id.clone());
         s.child = Some(child);
+        s.child_stdin = child_stdin;
         s.temp_dir = Some(temp_dir);
         s.inflight = inflight.clone();
         // Wipe any context from a previous recording — proper nouns and
@@ -1991,6 +2074,7 @@ pub async fn recording_start(
             if s.note_id.as_deref() == Some(&note_id_clone) {
                 s.note_id = None;
                 s.child = None;
+                s.child_stdin = None;
                 s.temp_dir = None;
                 s.reader = None;
                 s.inflight = Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -2035,19 +2119,39 @@ pub async fn recording_stop(
     emit_status(&app, Some(&note_id), Phase::Stopping);
 
     if let Some(mut child) = child {
-        // Send SIGTERM so the Swift sidecar runs its shutdown handler:
-        // closes the writers (emitting any final chunk + full_recording
-        // events), emits `stopped`, then exits. Wait up to 8 s for a
-        // graceful exit before falling back to SIGKILL. 8 s is generous
-        // for a normal stop (writer.close is synchronous and fast), but
+        // Ask the sidecar to stop gracefully so it runs its shutdown
+        // handler: closes the writers (emitting any final chunk +
+        // full_recording events), emits `stopped`, then exits. Wait up
+        // to 8 s before forcibly killing the process. 8 s is generous
+        // for a normal stop (writer close is synchronous and fast), but
         // ScreenCaptureKit's `stopCapture()` has been observed to stall
         // for multiple seconds; the sidecar now closes writers BEFORE
         // awaiting stopCapture, but the longer grace gives an extra
-        // safety margin so SIGKILL never truncates emitted-but-unread
-        // chunk events.
+        // safety margin so we never truncate emitted-but-unread chunk
+        // events on either OS.
+        //
+        // Unix: SIGTERM (the Swift sidecar listens for it).
+        // Windows: write "stop\n" to stdin (the Rust sidecar listens
+        // for it). Falls through to child.kill() on either platform if
+        // the graceful path doesn't land within the grace window.
+        #[cfg(unix)]
         if let Some(pid) = child.id() {
-            #[cfg(unix)]
             unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+        }
+        #[cfg(not(unix))]
+        {
+            use tokio::io::AsyncWriteExt;
+            let stdin = {
+                let mut s = state.recording.lock();
+                s.child_stdin.take()
+            };
+            if let Some(mut sin) = stdin {
+                let _ = sin.write_all(b"stop\n").await;
+                let _ = sin.flush().await;
+                // Drop the writer so the sidecar sees EOF on stdin and
+                // doesn't block waiting for more commands during shutdown.
+                drop(sin);
+            }
         }
         let waited = tokio::time::timeout(std::time::Duration::from_secs(8), child.wait()).await;
         if waited.is_err() {
@@ -4052,35 +4156,58 @@ fn emit_error(app: &AppHandle, note_id: Option<&str>, message: &str) {
 }
 
 fn sidecar_path(_app: &AppHandle) -> Result<PathBuf, String> {
-    // 1) Production / `tauri build`: Tauri copies external binaries next to
-    //    the main executable inside the .app bundle's MacOS folder, with the
-    //    triple suffix stripped. So look for ../MacOS/audio-capture first.
+    resolve_sidecar_path("audio-capture")
+        .ok_or_else(|| "audio-capture sidecar not found".into())
+}
+
+/// Cross-platform sidecar resolver shared by `audio-capture` and
+/// `speaker-diarize`. Looks first next to the main executable (where Tauri
+/// copies external binaries inside the bundled app on every platform), then
+/// in `src-tauri/binaries/` for `tauri dev` runs. On Windows the binary
+/// suffix is `.exe`; on Unix there is no suffix.
+pub(crate) fn resolve_sidecar_path(name: &str) -> Option<PathBuf> {
+    let exe_suffix = std::env::consts::EXE_SUFFIX; // ".exe" on Windows, "" elsewhere
+    let triples: &[&str] = if cfg!(target_os = "macos") {
+        &["aarch64-apple-darwin", "x86_64-apple-darwin"]
+    } else if cfg!(target_os = "windows") {
+        &["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+    } else {
+        &["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+    };
+
+    let candidate_names: Vec<String> = std::iter::once(format!("{name}{exe_suffix}"))
+        .chain(
+            triples
+                .iter()
+                .map(|t| format!("{name}-{t}{exe_suffix}")),
+        )
+        .collect();
+
+    // 1) Production: next to the main executable.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidates = [
-                dir.join("audio-capture"),
-                dir.join("audio-capture-aarch64-apple-darwin"),
-                dir.join("audio-capture-x86_64-apple-darwin"),
-            ];
-            for c in candidates {
-                if c.exists() {
-                    return Ok(c);
+            for n in &candidate_names {
+                let p = dir.join(n);
+                if p.exists() {
+                    return Some(p);
                 }
             }
         }
     }
 
-    // 2) Dev (`tauri dev`): the binary lives under src-tauri/binaries/.
+    // 2) Dev: src-tauri/binaries/ next to the cwd.
     if let Ok(cwd) = std::env::current_dir() {
-        for triple in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
-            let p = cwd.join(format!("src-tauri/binaries/audio-capture-{triple}"));
-            if p.exists() { return Ok(p); }
-            let p = cwd.join(format!("binaries/audio-capture-{triple}"));
-            if p.exists() { return Ok(p); }
+        for n in &candidate_names {
+            for prefix in ["src-tauri/binaries", "binaries"] {
+                let p = cwd.join(prefix).join(n);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
         }
     }
 
-    Err("audio-capture sidecar not found".into())
+    None
 }
 
 // Strip Tiptap-emitted HTML to plain text, preserving paragraph and list

@@ -1,0 +1,73 @@
+# speaker-diarize-rs — Windows port of the macOS Swift `speaker-diarize`
+# sidecar.
+#
+# Drives sherpa-onnx (pyannote segmentation + 3D-Speaker embedding +
+# k-means clustering) over a WAV file and emits the same JSON shape the
+# Rust backend's `diarize.rs` expects:
+#
+#   stdout:
+#     [{"start_ms":N,"end_ms":N,"speaker_id":"speaker_0"}, …]   for diarize
+#     {"downloaded":bool,"sizeBytes":N,"path":"…"}              for status
+#     {"event":"progress","fraction":F,"phase":"…"}             for download (stream)
+#     {"event":"done"}                                          for download (final)
+#
+# Subcommands (mirrors the Swift sidecar):
+#   speaker-diarize <wav-path> [--num-speakers N] [--engine community1|sortformer] [--threshold T]
+#   speaker-diarize status   [--engine …]
+#   speaker-diarize download [--engine …]
+#   speaker-diarize delete   [--engine …]
+#
+# Engines:
+#   community1  — pyannote-segmentation-3.0 + 3D-Speaker xvector + k-means.
+#                 Closest behavioural match to FluidAudio's community-1 set
+#                 on macOS (segmentation-then-cluster, similar quality).
+#   sortformer  — NVIDIA Streaming Sortformer end-to-end transformer (4-spk
+#                 cap, no num_speakers hint). Sherpa-onnx ships ONNX
+#                 conversions; same trade-off as on macOS.
+#
+# Models live under
+#   %APPDATA%\no.humla.app\models\diarize\<engine>\
+# downloaded on first use from the sherpa-onnx HuggingFace mirror.
+
+[package]
+name = "speaker-diarize-rs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "speaker-diarize"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+hound = "3"               # WAV reader
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+reqwest = { version = "0.12", features = ["blocking", "stream", "rustls-tls"], default-features = false }
+futures = "0.3"
+tokio = { version = "1", features = ["rt", "macros", "io-util", "fs"] }
+
+# Diarization engine deps deliberately omitted from this initial port.
+# The code in `engine.rs` is a stub that emits a clear "not yet wired"
+# error from the diarize subcommand; status / download / delete are
+# fully functional. To finish the port:
+#
+#   1. Add a Rust ONNX Runtime crate. Recommended: `sherpa-rs = "0.6"`
+#      (bundles ONNX Runtime + a working pyannote pipeline) or roll your
+#      own with `ort = "2"` + manual segmentation/embedding/clustering.
+#   2. Replace the body of `engine::diarize` with the real inference
+#      call, returning `Vec<Segment>` in the same shape the stub does.
+#
+# Doing it this way keeps the build green and the integration scope
+# tight — model API surfaces churn between sherpa-rs minor versions and
+# I want the user to see exactly what they're committing to before
+# pulling it in.
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+opt-level = 3

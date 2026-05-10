@@ -2,7 +2,13 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
+// `Manager` provides the `app.path()` extension method used by
+// `cleanup_legacy_streaming_models`, which is macOS-only. Importing it
+// unconditionally would produce an unused-import warning on Windows /
+// Linux, so we gate the import to match.
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -166,39 +172,12 @@ pub async fn diarize_file(
 }
 
 /// Mirror of audio-capture sidecar resolution: bundle path in production,
-/// `src-tauri/binaries/` in dev.
+/// `src-tauri/binaries/` in dev. Cross-platform binary suffix handling
+/// (`.exe` on Windows) lives in the shared `resolve_sidecar_path` helper.
 fn sidecar_path(app: &AppHandle) -> Result<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in [
-                "speaker-diarize",
-                "speaker-diarize-aarch64-apple-darwin",
-                "speaker-diarize-x86_64-apple-darwin",
-            ] {
-                let p = dir.join(name);
-                if p.exists() {
-                    return Ok(p);
-                }
-            }
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        for triple in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
-            let p = cwd.join(format!("src-tauri/binaries/speaker-diarize-{triple}"));
-            if p.exists() {
-                return Ok(p);
-            }
-            let p = cwd.join(format!("binaries/speaker-diarize-{triple}"));
-            if p.exists() {
-                return Ok(p);
-            }
-        }
-    }
-    // Fallback so tests / dev builds without the sidecar produce a clear
-    // error instead of a panic. The caller decides how to handle it
-    // (currently: log + skip diarization, leaving the transcript untagged).
     let _ = app;
-    Err(anyhow!("speaker-diarize sidecar not found"))
+    crate::commands::resolve_sidecar_path("speaker-diarize")
+        .ok_or_else(|| anyhow!("speaker-diarize sidecar not found"))
 }
 
 /// Best-effort cleanup of the full-recording WAV. Logs and continues on
@@ -227,44 +206,57 @@ pub async fn cleanup_full_wav(path: &Path) {
 /// reshuffle. FluidAudio writes to `~/Library/Application Support/FluidAudio/`,
 /// a sibling of our own `~/Library/Application Support/no.humla.app/`.
 pub fn cleanup_legacy_streaming_models(app: &AppHandle, conn: &rusqlite::Connection) {
-    const FLAG_KEY: &str = "legacy_streaming_models_purged_v1";
-    match crate::db::get_setting(conn, FLAG_KEY) {
-        Ok(Some(_)) => return, // already purged on a prior launch
-        Ok(None) => {}
-        Err(e) => {
-            eprintln!("cleanup_legacy: read flag failed: {e}");
-            // Don't proceed without a working DB — the flag write below
-            // would also fail and we'd loop on every launch.
-            return;
-        }
-    }
-
-    let app_data = match app.path().app_data_dir() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("cleanup_legacy: no app_data_dir: {e}");
-            return;
-        }
-    };
-    let Some(application_support) = app_data.parent() else {
-        eprintln!("cleanup_legacy: app_data_dir has no parent");
+    // The legacy files are CoreML-compiled .mlmodelc bundles produced by the
+    // FluidAudio Swift package on macOS. Windows / Linux installs never
+    // produced them, so the cleanup is a no-op there — gate at the top so
+    // we don't even read the settings flag (and skip writing it, leaving
+    // the slot free for a future-platform cleanup if one ever ships).
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, conn);
         return;
-    };
-    let fluid_dir = application_support
-        .join("FluidAudio")
-        .join("Models")
-        .join("speaker-diarization");
-    for legacy in ["pyannote_segmentation.mlmodelc", "wespeaker_v2.mlmodelc"] {
-        let p = fluid_dir.join(legacy);
-        if p.exists() {
-            match std::fs::remove_dir_all(&p) {
-                Ok(_) => eprintln!("cleanup_legacy: removed {}", p.display()),
-                Err(e) => eprintln!("cleanup_legacy: remove {} failed: {e}", p.display()),
+    }
+    #[cfg(target_os = "macos")]
+    {
+        const FLAG_KEY: &str = "legacy_streaming_models_purged_v1";
+        match crate::db::get_setting(conn, FLAG_KEY) {
+            Ok(Some(_)) => return, // already purged on a prior launch
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("cleanup_legacy: read flag failed: {e}");
+                // Don't proceed without a working DB — the flag write below
+                // would also fail and we'd loop on every launch.
+                return;
             }
         }
-    }
-    if let Err(e) = crate::db::set_setting(conn, FLAG_KEY, "1") {
-        eprintln!("cleanup_legacy: write flag failed: {e}");
+
+        let app_data = match app.path().app_data_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("cleanup_legacy: no app_data_dir: {e}");
+                return;
+            }
+        };
+        let Some(application_support) = app_data.parent() else {
+            eprintln!("cleanup_legacy: app_data_dir has no parent");
+            return;
+        };
+        let fluid_dir = application_support
+            .join("FluidAudio")
+            .join("Models")
+            .join("speaker-diarization");
+        for legacy in ["pyannote_segmentation.mlmodelc", "wespeaker_v2.mlmodelc"] {
+            let p = fluid_dir.join(legacy);
+            if p.exists() {
+                match std::fs::remove_dir_all(&p) {
+                    Ok(_) => eprintln!("cleanup_legacy: removed {}", p.display()),
+                    Err(e) => eprintln!("cleanup_legacy: remove {} failed: {e}", p.display()),
+                }
+            }
+        }
+        if let Err(e) = crate::db::set_setting(conn, FLAG_KEY, "1") {
+            eprintln!("cleanup_legacy: write flag failed: {e}");
+        }
     }
 }
 

@@ -146,7 +146,7 @@ For a deep dive into the architecture — module map, data flow, gotchas — see
 
 ## Build from source
 
-Requires macOS 13+, Apple Silicon recommended.
+### macOS 13+ (Apple Silicon recommended)
 
 Prerequisites:
 - Rust toolchain (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
@@ -172,22 +172,53 @@ open src-tauri/target/debug/bundle/macos/Humla.app
 
 For the full release pipeline (signed + notarised DMG + auto-updater payload + GitHub release), see `scripts/release.sh` and the credentials it reads from `.env.notarise`. Requires an Apple Developer ID, notary key, and a Tauri updater Ed25519 keypair.
 
+### Windows 10/11 (experimental)
+
+Humla's Windows port replaces the macOS Swift sidecars with Rust equivalents in `audio-capture-rs/` (cpal + WASAPI loopback) and `speaker-diarize-rs/` (ONNX scaffold). Status: backend + audio capture are wired end-to-end; diarization on Windows currently emits a clear "wire ONNX Runtime here" error from the sidecar — see `speaker-diarize-rs/src/engine.rs` for the integration points (recommended: `sherpa-rs`).
+
+Prerequisites:
+- Rust toolchain via [rustup](https://rustup.rs) (MSVC host triple)
+- Visual Studio 2022 Build Tools with the *Desktop development with C++* workload (`cmake` + MSVC linker for `whisper.cpp` and the bundler)
+- Node 20+ and `pnpm`
+- PowerShell 7+ (`pwsh`) for the build scripts
+- WebView2 Runtime (almost always already on Windows 11)
+
+```powershell
+git clone https://github.com/michaelwilhelmsen/humla.git
+cd humla
+pnpm install
+pnpm sidecars:windows         # builds both Rust sidecars to src-tauri/binaries/
+pnpm tauri dev
+```
+
+To build an NSIS installer:
+
+```powershell
+pnpm bundle:windows           # → src-tauri/target/release/bundle/nsis/*.exe
+```
+
+The installer is unsigned by default. To Authenticode-sign it, set `TAURI_PFX_PATH` and `TAURI_PFX_PASSWORD` env vars to point at a `.pfx` file before running `pnpm bundle:windows`.
+
+GPU inference is enabled via `whisper-rs`'s `vulkan` feature (works on NVIDIA, AMD, Intel — needs a recent Vulkan runtime). Falls back to CPU when no GPU is available.
+
 ## Project layout
 
 ```
 humla/
 ├── src/                        # React frontend (Tiptap + Zustand)
-├── src-tauri/                  # Rust backend (Tauri 2)
+├── src-tauri/                  # Rust backend (Tauri 2, cross-platform)
 │   ├── src/
 │   │   ├── commands.rs         # Tauri commands, recording lifecycle
 │   │   ├── recording.rs        # session state, per-source trails
 │   │   ├── stt/                # STT adapter abstraction (OpenAI/Local/Deepgram/Groq)
 │   │   ├── diarize.rs          # speaker-diarize sidecar wrapper
-│   │   ├── local_whisper.rs    # whisper-rs + Metal model registry
+│   │   ├── local_whisper.rs    # whisper-rs + Metal/Vulkan model registry
 │   │   └── openai.rs           # OpenAI HTTP client + summary endpoint
-│   └── binaries/               # signed sidecar binaries
-├── audio-capture/              # Swift sidecar: mic + screen audio
-└── speaker-diarize/            # Swift sidecar: offline diarization
+│   └── binaries/               # signed sidecar binaries (per-triple)
+├── audio-capture/              # macOS Swift sidecar: mic + screen audio
+├── speaker-diarize/            # macOS Swift sidecar: offline diarization
+├── audio-capture-rs/           # Windows Rust sidecar: cpal + WASAPI loopback
+└── speaker-diarize-rs/         # Windows Rust sidecar: ONNX (scaffold)
 ```
 
 ## Tech stack

@@ -152,6 +152,47 @@ Two Swift Package binaries that run alongside the Tauri main process. Both bundl
 - **Entitlements** (`src-tauri/entitlements.plist`) — mic input, network client, screen capture usage description, no app-sandbox.
 - **Tauri webview limitation** — `window.prompt` / `confirm` / `alert` are blocked by the Tauri webview to avoid main-thread deadlock. Use inline input UIs (folder creation in Sidebar + Note's FolderPicker, etc.).
 
+## Windows port (experimental)
+
+The Windows build is a parallel implementation that swaps out only the platform-specific surfaces — the React frontend, Tauri commands, SQLite schema, STT adapters, and HTTP clients are all unchanged.
+
+### What's different on Windows
+
+| Surface | macOS | Windows |
+|---|---|---|
+| **Audio capture sidecar** | `audio-capture/` (Swift, AVFoundation + ScreenCaptureKit) | `audio-capture-rs/` (Rust, cpal + WASAPI loopback) |
+| **Speaker-diarize sidecar** | `speaker-diarize/` (Swift, FluidAudio CoreML on ANE) | `speaker-diarize-rs/` (Rust, ONNX Runtime — **scaffold**, see below) |
+| **Whisper GPU** | Metal (`whisper-rs` `metal` feature) | Vulkan (`whisper-rs` `vulkan` feature, broad GPU coverage) |
+| **API key storage** | macOS Keychain (`keyring` `apple-native`) | Windows Credential Manager (`keyring` `windows-native`) |
+| **Pause / resume IPC** | POSIX signals (SIGUSR1/SIGUSR2) | Stdin commands (`pause\n` / `resume\n` / `stop\n`) — Windows has no SIGUSR equivalent that an unrelated process can raise |
+| **Sidecar zombie protection** | `setsid` + parent-PID poll inside the sidecar | `kill_on_drop(true)` on the tokio child + `CREATE_NO_WINDOW` flag for spawn |
+| **Permissions deep-link** | `x-apple.systempreferences:com.apple.preference.security?…` via `open` | `ms-settings:privacy-microphone` / `ms-settings:privacy-graphicscapture` via `cmd /c start` |
+| **App data path** | `~/Library/Application Support/no.humla.app/` | `%APPDATA%\no.humla.app\` (resolved via `dirs::data_dir()` on both) |
+| **Bundle target** | `app` + `dmg` (Developer ID signed + notarised) | `nsis` (per-user installer; Authenticode optional via `TAURI_PFX_PATH` env var) |
+| **Quit-time exit** | `libc::_exit(0)` to bypass GGML Metal destructor abort | Standard tokio runtime shutdown — no Metal backend means no `ggml_abort` race |
+| **Menu bar** | Full macOS App menu (About / Services / Hide / Hide Others / Show All / Quit) | Slim `File` (Check for Updates, Quit) + standard Edit + Window |
+
+### Cross-platform code paths
+
+Cargo dependencies are gated per-target in `src-tauri/Cargo.toml`. The Tauri `macos-private-api` feature is only set on macOS targets; `whisper-rs` swaps `metal` ↔ `vulkan` per platform; `keyring` switches backends.
+
+`commands.rs` uses `#[cfg(unix)]` / `#[cfg(windows)]` for the signal-vs-stdin pause/resume/stop dispatch. `recording.rs` adds a `child_stdin: Option<ChildStdin>` slot to `RecordingSession` so the Windows IPC reader can write to the sidecar's stdin without a blocking lock around it. `diarize.rs::cleanup_legacy_streaming_models` is a no-op on non-macOS targets (the FluidAudio CoreML files only exist on macOS).
+
+Sidecar resolution (`commands::resolve_sidecar_path`) picks the right binary by target triple — `audio-capture-x86_64-pc-windows-msvc.exe` on Windows, `audio-capture-aarch64-apple-darwin` on macOS — and is shared by both `commands.rs::sidecar_path` and `diarize.rs::sidecar_path`.
+
+### Status of the Windows sidecars
+
+**`audio-capture-rs/`** — fully implemented; mirrors the Swift sidecar's wire protocol exactly (stdout JSON events: `chunk`, `full_recording`, `heartbeat`, `paused`, `resumed`, `stopped`, `error`). Mic via `cpal`, system audio via WASAPI loopback (Windows only — falls through to "mic only" on other targets). VAD constants, chunk filenames, `start_ms` semantics all match Swift. The `wasapi` 0.18 crate API may need a small adjustment on first Windows build — the implementation hits the documented surface but I couldn't validate against a live Windows toolchain.
+
+**`speaker-diarize-rs/`** — scaffold. Status / download / delete subcommands are fully functional; the actual ONNX inference call inside `engine::diarize` returns a clear "not yet wired" error. To finish: pull in `sherpa-rs = "0.6"` (bundles ONNX Runtime + a working pyannote pipeline) and replace the stub body — model files are already on disk by then via the working download path. Pyannote-segmentation-3.0 + 3D-Speaker xvector embeddings (community-1) is the recommended baseline; the sortformer engine path will need an ONNX export upstream before it can be wired up.
+
+### Windows-specific local data layout
+
+- **DB** — `%APPDATA%\no.humla.app\notes.sqlite` (same schema, same migrations, same WAL).
+- **Local Whisper models** — `%APPDATA%\no.humla.app\models\`.
+- **Diarization models** — `%APPDATA%\no.humla.app\models\diarize\<engine>\` (the Rust sidecar manages its own dir, not a sibling FluidAudio path like on macOS).
+- **API keys** — Windows Credential Manager, target `no.humla.app/<provider_id>` (one entry per provider, same caching as on macOS).
+
 ## Local data layout
 
 - **DB** — `~/Library/Application Support/no.humla.app/notes.sqlite` (SQLite, WAL). Schema: `notes` (with `language`, `summary_preset`, `summary_provider`, `expected_speakers`, `folder_id` columns), `folders`, `settings`, `summary_prompts`.
@@ -174,8 +215,10 @@ Two Swift Package binaries that run alongside the Tauri main process. Both bundl
 | `pnpm tauri build` | Production bundle (`.app` + `.dmg`) — calls both sidecar build scripts via `beforeBuildCommand` chain |
 | `pnpm dmg` | Wrapper: builds both sidecars, then `pnpm tauri build`; prints final DMG path |
 | `pnpm release` | Full release pipeline: build + notarise + staple + sign updater payload + tag + push + GitHub release |
+| `pnpm sidecars:windows` | Build + cache-stamp both Rust sidecars (Windows; PowerShell, runs `cargo build --release` in each crate) |
+| `pnpm bundle:windows` | Wrapper: runs `sidecars:windows`, then `pnpm tauri build --bundles nsis`; prints installer path |
 
-DMG output lands in `src-tauri/target/release/bundle/dmg/`.
+DMG output lands in `src-tauri/target/release/bundle/dmg/`. NSIS installer lands in `src-tauri/target/release/bundle/nsis/`.
 
 ## Distribution & signing
 
