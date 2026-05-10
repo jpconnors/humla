@@ -1,24 +1,20 @@
 //! Diarization engine wrappers.
 //!
-//! **Status: scaffold.** The `diarize()` function returns a clear
-//! "not yet wired" error rather than fake segments. The download +
-//! status + delete subcommands are fully functional, so the user can
-//! download the models from Settings, see them on disk, and delete
-//! them — all that's missing is the inference call.
+//! Inference runs through `sherpa-onnx` (offline pyannote-segmentation-3.0
+//! + 3D-Speaker xvector + fast clustering). `download.rs` lays the two
+//! ONNX files into `dir`; we point sherpa-onnx at them and run.
 //!
-//! To finish the port, swap the `not_implemented_error` block at the
-//! bottom of `diarize()` for a real ONNX Runtime call. The simplest
-//! path is to add `sherpa-rs = "0.6"` (which bundles ONNX Runtime and
-//! a working pyannote pipeline) and call its
-//! `SpeakerDiarization::process(samples)` — returning the produced
-//! segments in the same `Vec<Segment>` shape this stub already builds
-//! up.
-//!
-//! See `download.rs::expected_paths` for which model files are on disk
-//! at the time `diarize()` is called.
+//! Sortformer is a placeholder — `download::run` rejects it because no
+//! ONNX export is published upstream yet. We bail loudly here too in
+//! case a stale `.downloaded` marker sneaks past that check.
 
 use crate::{download, Engine, Segment};
 use anyhow::{anyhow, Context, Result};
+use sherpa_onnx::{
+    FastClusteringConfig, OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig,
+    OfflineSpeakerSegmentationModelConfig, OfflineSpeakerSegmentationPyannoteModelConfig,
+    SpeakerEmbeddingExtractorConfig,
+};
 use std::path::{Path, PathBuf};
 
 /// Was the per-engine model set successfully downloaded? Cheap presence
@@ -64,9 +60,6 @@ fn walkdir(dir: &Path) -> Result<Vec<PathBuf>> {
 /// stable `speaker_id` strings ("speaker_0", "speaker_1", …) — the Rust
 /// backend's `assign_speaker` only cares about identity-equality, not
 /// the specific labels.
-///
-/// **Stub today.** Returns `Err(...)` until the ONNX Runtime call is
-/// wired in. See module docs.
 pub fn diarize(
     engine: Engine,
     dir: &Path,
@@ -76,9 +69,16 @@ pub fn diarize(
     silence_threshold: Option<f32>,
     pred_threshold: Option<f32>,
 ) -> Result<Vec<Segment>> {
-    // Verify model files are on disk before claiming we can't run them.
-    // This converts "model missing" into a re-download hint instead of
-    // the generic "not implemented" message.
+    if matches!(engine, Engine::Sortformer) {
+        return Err(anyhow!(
+            "sortformer is not yet supported on Windows. Switch to community1 in Settings → Diarization."
+        ));
+    }
+
+    // Sortformer-only knobs; kept in the signature so the dispatch layer
+    // can stay engine-agnostic.
+    let _ = (silence_threshold, pred_threshold);
+
     let paths = download::expected_paths(engine, dir);
     for p in paths.iter() {
         if !p.exists() {
@@ -89,14 +89,62 @@ pub fn diarize(
         }
     }
 
-    // Threshold knobs aren't used yet — preserve the names so call-sites
-    // don't need to change once inference is wired up.
-    let _ = (samples, num_speakers, threshold, silence_threshold, pred_threshold);
+    let seg_path = dir.join("segmentation.onnx");
+    let emb_path = dir.join("embedding.onnx");
 
-    Err(anyhow!(
-        "Windows diarization is not yet wired up to ONNX Runtime. \
-         Open speaker-diarize-rs/src/engine.rs and replace this stub with a \
-         real sherpa-rs (or ort) inference call — see module docs for the steps. \
-         All other subcommands (status / download / delete) are fully functional."
-    ))
+    let config = OfflineSpeakerDiarizationConfig {
+        segmentation: OfflineSpeakerSegmentationModelConfig {
+            pyannote: OfflineSpeakerSegmentationPyannoteModelConfig {
+                model: Some(seg_path.to_string_lossy().into_owned()),
+            },
+            ..Default::default()
+        },
+        embedding: SpeakerEmbeddingExtractorConfig {
+            model: Some(emb_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+        clustering: FastClusteringConfig {
+            // num_clusters == 0 → estimate from threshold; > 0 → fixed.
+            // Matches FluidAudio community-1's behaviour when the user
+            // has set `expected_speakers`.
+            num_clusters: num_speakers.map(|n| n as i32).unwrap_or(0),
+            // 0.5 mirrors the macOS community1 setting; only consulted
+            // when num_clusters == 0.
+            threshold: threshold.unwrap_or(0.5),
+        },
+        ..Default::default()
+    };
+
+    let sd = OfflineSpeakerDiarization::create(&config).ok_or_else(|| {
+        anyhow!(
+            "sherpa-onnx failed to load diarization models from {}",
+            dir.display()
+        )
+    })?;
+
+    // io_wav::read_mono_16k already enforces 16 kHz; this trips loudly
+    // if a future model bundle disagrees instead of silently producing
+    // junk segments.
+    if sd.sample_rate() != 16_000 {
+        return Err(anyhow!(
+            "diarizer expects {} Hz; supplied samples are 16 kHz",
+            sd.sample_rate()
+        ));
+    }
+
+    let result = sd
+        .process(samples)
+        .ok_or_else(|| anyhow!("sherpa-onnx process() returned None — empty or malformed audio"))?;
+
+    let segments = result
+        .sort_by_start_time()
+        .into_iter()
+        .map(|s| Segment {
+            start_ms: (s.start.max(0.0) * 1000.0).round() as u64,
+            end_ms: (s.end.max(0.0) * 1000.0).round() as u64,
+            speaker_id: format!("speaker_{}", s.speaker),
+        })
+        .collect();
+
+    Ok(segments)
 }

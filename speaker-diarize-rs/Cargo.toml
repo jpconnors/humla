@@ -50,21 +50,12 @@ reqwest = { version = "0.12", features = ["blocking", "stream", "rustls-tls"], d
 futures = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "io-util", "fs"] }
 
-# Diarization engine deps deliberately omitted from this initial port.
-# The code in `engine.rs` is a stub that emits a clear "not yet wired"
-# error from the diarize subcommand; status / download / delete are
-# fully functional. To finish the port:
-#
-#   1. Add a Rust ONNX Runtime crate. Recommended: `sherpa-rs = "0.6"`
-#      (bundles ONNX Runtime + a working pyannote pipeline) or roll your
-#      own with `ort = "2"` + manual segmentation/embedding/clustering.
-#   2. Replace the body of `engine::diarize` with the real inference
-#      call, returning `Vec<Segment>` in the same shape the stub does.
-#
-# Doing it this way keeps the build green and the integration scope
-# tight — model API surfaces churn between sherpa-rs minor versions and
-# I want the user to see exactly what they're committing to before
-# pulling it in.
+# Offline speaker diarization: pyannote-segmentation-3.0 + 3D-Speaker
+# xvector + fast clustering. Default `static` feature compiles the
+# sherpa-onnx C++ core from source via cmake — needs MSVC + cmake on
+# Windows (already required for the whisper-rs `vulkan` build). First
+# build is slow; subsequent builds are cached.
+sherpa-onnx = "1.13"
 
 [profile.release]
 lto = "thin"

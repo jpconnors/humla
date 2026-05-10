@@ -25,8 +25,11 @@ struct ModelFile {
 fn community1_files() -> &'static [ModelFile] {
     &[
         ModelFile {
-            // pyannote segmentation-3.0 (ONNX export)
-            url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+            // pyannote-segmentation-3.0, ~6 MB. Direct .onnx on the
+            // sherpa-onnx maintainer's HF mirror — the GitHub release
+            // only ships a .tar.bz2 bundle which would require a bzip2
+            // + tar decode pass after fetch.
+            url: "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx",
             rel_path: "segmentation.onnx",
         },
         ModelFile {

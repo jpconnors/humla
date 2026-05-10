@@ -1,0 +1,59 @@
+# Builds the Rust sidecars (audio-capture + speaker-diarize) on Windows
+# and uploads them as a build artifact. Lets us produce the MSVC-linked
+# .exe files without a local MSVC + cmake install.
+#
+# The speaker-diarize sidecar pulls in sherpa-onnx, which compiles its
+# C++ core via cmake on first build (~5–10 min). Subsequent runs hit the
+# rust-cache and finish in well under a minute.
+#
+# Download from: Actions tab → run → "humla-windows-sidecars" artifact
+# at the bottom of the run summary. Drop the .exe files into
+# src-tauri/binaries/ on the local box; Tauri's bundler resolves them
+# by triple suffix.
+
+name: Build Windows sidecars
+
+on:
+  push:
+    branches:
+      - claude/port-to-windows-8vhd3
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + sherpa-onnx C++ build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            speaker-diarize-rs
+            audio-capture-rs
+
+      - name: Build speaker-diarize-rs
+        working-directory: speaker-diarize-rs
+        run: cargo build --release
+
+      - name: Build audio-capture-rs
+        working-directory: audio-capture-rs
+        run: cargo build --release
+
+      - name: Stage sidecars with triple suffix
+        shell: pwsh
+        run: |
+          $triple = ((rustc -vV | Select-String '^host: ').Line -replace '^host: ', '').Trim()
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item speaker-diarize-rs/target/release/speaker-diarize.exe "artifacts/speaker-diarize-$triple.exe"
+          Copy-Item audio-capture-rs/target/release/audio-capture.exe   "artifacts/audio-capture-$triple.exe"
+          Get-ChildItem artifacts | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: humla-windows-sidecars
+          path: artifacts/*.exe
+          if-no-files-found: error
