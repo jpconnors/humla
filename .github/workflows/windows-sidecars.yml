@@ -73,9 +73,18 @@ jobs:
       # chars — comfortable headroom. Sidecars were already built above
       # with the default target dir so externalBin resolution still works.
       - name: Build Tauri NSIS installer
+        shell: pwsh
         env:
           CARGO_TARGET_DIR: C:\t
-        run: pnpm tauri build --bundles nsis
+        run: |
+          # Override createUpdaterArtifacts:true from tauri.conf.json —
+          # the Ed25519 private key referenced by plugins.updater.pubkey
+          # lives only on the upstream maintainer's mac. CI has no access
+          # to it and we're not shipping through the updater channel from
+          # this branch anyway, so skip the .sig signing step that would
+          # otherwise abort the build right after the installer is written.
+          '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content -Path src-tauri/tauri.conf.ci.json -NoNewline
+          pnpm tauri build --bundles nsis --config src-tauri/tauri.conf.ci.json
 
       - name: Stage artifacts
         shell: pwsh
