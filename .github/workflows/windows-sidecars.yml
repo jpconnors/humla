@@ -1,17 +1,17 @@
-# Builds the Rust sidecars (audio-capture + speaker-diarize) on Windows
-# and uploads them as a build artifact. Lets us produce the MSVC-linked
-# .exe files without a local MSVC + cmake install.
+# Builds the Rust sidecars + the full Humla NSIS installer on Windows.
+# Lets devs without a local MSVC + cmake + Vulkan SDK install pull a
+# working installer down without going through corporate IT for admin
+# elevation.
 #
-# The speaker-diarize sidecar pulls in sherpa-onnx, which compiles its
-# C++ core via cmake on first build (~5–10 min). Subsequent runs hit the
-# rust-cache and finish in well under a minute.
+# Cold cache: ~20 min (sherpa-onnx C++ + whisper.cpp Vulkan + Tauri).
+# Warm cache (Swatinem/rust-cache): typically under 3 min.
 #
-# Download from: Actions tab → run → "humla-windows-sidecars" artifact
-# at the bottom of the run summary. Drop the .exe files into
-# src-tauri/binaries/ on the local box; Tauri's bundler resolves them
-# by triple suffix.
+# Download from: Actions tab → run → "humla-windows-build" artifact at
+# the bottom of the run summary. The bundle contains both sidecar .exe
+# files (drop into src-tauri/binaries/ for local Tauri dev) plus the
+# Humla-<version>_x64-setup.exe installer (run to install on the box).
 
-name: Build Windows sidecars
+name: Build Windows installer
 
 on:
   push:
@@ -28,32 +28,58 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo + sherpa-onnx C++ build
+      # whisper-rs `vulkan` feature compiles whisper.cpp against this SDK;
+      # without it the src-tauri build fails at the cmake configure step
+      # with "Could not find a package configuration file provided by Vulkan".
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.3.290.0
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Cache cargo + sherpa-onnx + whisper.cpp C++ builds
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             speaker-diarize-rs
             audio-capture-rs
+            src-tauri
 
-      - name: Build speaker-diarize-rs
-        working-directory: speaker-diarize-rs
-        run: cargo build --release
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
 
-      - name: Build audio-capture-rs
-        working-directory: audio-capture-rs
-        run: cargo build --release
+      - name: Build Rust sidecars (copies into src-tauri/binaries/)
+        run: pnpm sidecars:windows
 
-      - name: Stage sidecars with triple suffix
+      - name: Build Tauri NSIS installer
+        run: pnpm tauri build --bundles nsis
+
+      - name: Stage artifacts
         shell: pwsh
         run: |
           $triple = ((rustc -vV | Select-String '^host: ').Line -replace '^host: ', '').Trim()
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          Copy-Item speaker-diarize-rs/target/release/speaker-diarize.exe "artifacts/speaker-diarize-$triple.exe"
-          Copy-Item audio-capture-rs/target/release/audio-capture.exe   "artifacts/audio-capture-$triple.exe"
+          Copy-Item "src-tauri/binaries/speaker-diarize-$triple.exe" "artifacts/"
+          Copy-Item "src-tauri/binaries/audio-capture-$triple.exe"   "artifacts/"
+          Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" -Recurse |
+            Copy-Item -Destination "artifacts/" -Force
           Get-ChildItem artifacts | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
-          name: humla-windows-sidecars
-          path: artifacts/*.exe
+          name: humla-windows-build
+          path: artifacts/*
           if-no-files-found: error
