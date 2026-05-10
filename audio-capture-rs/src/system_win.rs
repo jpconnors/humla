@@ -25,9 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use wasapi::{
-    initialize_mta, AudioClient, Direction, ShareMode, StreamMode, WaveFormat,
-};
+use wasapi::{initialize_mta, AudioClient, Direction, StreamMode, WaveFormat};
 
 pub struct SystemCapture {
     paused: Arc<AtomicBool>,
@@ -120,14 +118,16 @@ fn run_loopback(
 
     // 100 ms buffer is the WASAPI sweet spot for shared mode — small enough
     // for low latency, large enough to avoid underruns under typical scheduler
-    // jitter. Loopback shares the render endpoint's clock so glitch-free.
-    let buffer_dur_hns = 1_000_000_i64; // 100 ms in 100-ns units
+    // jitter. autoconvert=true lets WASAPI resample if the device's mix format
+    // disagrees with our requested format; we feed it the device's own format
+    // so it's a no-op in practice but harmless to enable.
     audio_client.initialize_client(
         &mix_format,
-        buffer_dur_hns,
         &Direction::Capture,
-        &ShareMode::Shared,
-        StreamMode::EventsShared,
+        &StreamMode::EventsShared {
+            autoconvert: true,
+            buffer_duration_hns: 1_000_000,
+        },
     )?;
     let h_event = audio_client.set_get_eventhandle()?;
     let capture_client = audio_client.get_audiocaptureclient()?;
