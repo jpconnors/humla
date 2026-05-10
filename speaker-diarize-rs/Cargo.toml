@@ -46,7 +46,11 @@ anyhow = "1"
 hound = "3"               # WAV reader
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
-reqwest = { version = "0.12", features = ["blocking", "stream", "rustls-tls"], default-features = false }
+# native-tls (schannel on Windows / Security.framework on macOS) instead
+# of rustls — rustls bundles the Mozilla root store, so it can't validate
+# corporate-MITM certs that an end user's IT department may inject. Using
+# the OS cert store keeps downloads working in those environments.
+reqwest = { version = "0.12", features = ["blocking", "stream"] }
 futures = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "io-util", "fs"] }
 
