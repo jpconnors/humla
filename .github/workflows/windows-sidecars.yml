@@ -64,7 +64,17 @@ jobs:
       - name: Build Rust sidecars (copies into src-tauri/binaries/)
         run: pnpm sidecars:windows
 
+      # whisper.cpp's Vulkan backend builds a nested ExternalProject
+      # (vulkan-shaders-gen) under whisper-rs-sys's target dir; the default
+      # `src-tauri/target/...` path blows past Windows' 260-char MAX_PATH
+      # by ~10 chars before MSBuild's FileTracker even appends tlog suffixes,
+      # surfacing as FTK1011 during the TryCompile step. Redirecting just
+      # the Tauri build's CARGO_TARGET_DIR to a short root reclaims ~40
+      # chars — comfortable headroom. Sidecars were already built above
+      # with the default target dir so externalBin resolution still works.
       - name: Build Tauri NSIS installer
+        env:
+          CARGO_TARGET_DIR: C:\t
         run: pnpm tauri build --bundles nsis
 
       - name: Stage artifacts
@@ -74,7 +84,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Copy-Item "src-tauri/binaries/speaker-diarize-$triple.exe" "artifacts/"
           Copy-Item "src-tauri/binaries/audio-capture-$triple.exe"   "artifacts/"
-          Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" -Recurse |
+          Get-ChildItem -Path "C:\t\release\bundle\nsis" -Filter "*.exe" -Recurse |
             Copy-Item -Destination "artifacts/" -Force
           Get-ChildItem artifacts | Format-Table Name, Length
 
