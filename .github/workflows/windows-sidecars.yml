@@ -76,6 +76,19 @@ jobs:
         shell: pwsh
         env:
           CARGO_TARGET_DIR: C:\t
+          # whisper.cpp's cmake auto-detects host SIMD when WHISPER_NATIVE
+          # is on (default). The GHA windows-latest runner's Xeon has
+          # AVX-512; most consumer / mobile CPUs (Intel 12th-gen+, AMD
+          # Zen 4-) don't. Without this, the linker bakes AVX-512
+          # instructions into humla.exe and the app crashes with
+          # STATUS_ILLEGAL_INSTRUCTION (0xc000001d) on those targets the
+          # first time whisper inference runs. WHISPER_NATIVE=OFF + a
+          # hard cap of /arch:AVX2 in the MSVC release flags gives us a
+          # portable binary that still benefits from AVX2 (which every
+          # x86_64 CPU from the last decade has).
+          WHISPER_NATIVE: 'OFF'
+          CMAKE_C_FLAGS_RELEASE: '/O2 /Ob2 /DNDEBUG /arch:AVX2'
+          CMAKE_CXX_FLAGS_RELEASE: '/O2 /Ob2 /DNDEBUG /arch:AVX2'
         run: |
           # Override createUpdaterArtifacts:true from tauri.conf.json —
           # the Ed25519 private key referenced by plugins.updater.pubkey
