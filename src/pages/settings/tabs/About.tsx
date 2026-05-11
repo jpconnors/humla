@@ -5,6 +5,7 @@ import { ipc } from "../../../lib/ipc";
 import { emitDeveloperModeChange } from "../../../lib/useDeveloperMode";
 import { Btn } from "../components/Btn";
 import { Row, Section } from "../components/Section";
+import { deviceName, fileManagerName } from "../../../lib/platform";
 
 const REPO_URL = "https://github.com/michaelwilhelmsen/humla";
 
@@ -137,7 +138,7 @@ export function AboutTab() {
         <Row label="Privacy">
           <p className="text-sm">No telemetry, no tracking, no analytics.</p>
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
-            Your notes, audio, and transcripts stay on your Mac. Cloud
+            Your notes, audio, and transcripts stay on your {deviceName}. Cloud
             transcription / summarisation only sends data to OpenAI when
             you explicitly select cloud providers.
           </p>
@@ -151,13 +152,13 @@ export function AboutTab() {
               {dataDir || "—"}
             </code>
             <Btn onClick={() => dataDir && openExternal(dataDir)} disabled={!dataDir}>
-              Open in Finder
+              Open in {fileManagerName}
             </Btn>
           </div>
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
             Notes, settings, downloaded models, and the audio temp dir all
             live here. Back up <code>notes.sqlite</code> from this folder
-            to copy your library to another Mac.
+            to copy your library to another {deviceName}.
           </p>
         </Row>
       </Section>

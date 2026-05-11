@@ -3,6 +3,7 @@ import { Circle, Pause, Play, Square, Sparkles } from "lucide-react";
 import { ipc } from "../lib/ipc";
 import { useNotesStore, useRecordingStore } from "../lib/store";
 import { cn } from "../lib/cn";
+import { cmdKey } from "../lib/platform";
 
 export function RecordingBar({ noteId }: { noteId: string }) {
   const status = useRecordingStore((s) => s.status);
@@ -78,7 +79,7 @@ export function RecordingBar({ noteId }: { noteId: string }) {
             onClick={start}
             disabled={otherNoteRecording}
             className="nd-action no-drag"
-            title="⌘R"
+            title={`${cmdKey}R`}
           >
             <Circle size={11} fill="currentColor" strokeWidth={0} className="text-[var(--color-accent)]" />
             <span>Record</span>
@@ -125,7 +126,7 @@ export function RecordingBar({ noteId }: { noteId: string }) {
           <button
             onClick={phase === "recording" ? pause : resume}
             className="no-drag flex items-center px-3 hover:bg-[var(--color-pill-hover)] text-[var(--color-text)] transition-colors"
-            title={phase === "recording" ? "Pause (⌘R)" : "Resume (⌘R)"}
+            title={phase === "recording" ? `Pause (${cmdKey}R)` : `Resume (${cmdKey}R)`}
             aria-label={phase === "recording" ? "Pause" : "Resume"}
           >
             {phase === "recording"

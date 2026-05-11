@@ -13,6 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useNotesStore } from "../lib/store";
+import { cmdKey } from "../lib/platform";
 import { ipc, type Folder, type Note } from "../lib/ipc";
 import { cn } from "../lib/cn";
 
@@ -171,7 +172,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
           data-tauri-drag-region="false"
           className="no-drag p-1.5 rounded-md hover:bg-[var(--color-pill-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
           aria-label="Collapse sidebar"
-          title="⌘\"
+          title={`${cmdKey}\\`}
         >
           <ChevronLeft size={16} strokeWidth={1.5} />
         </button>
@@ -190,7 +191,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
           className="shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)] border border-[var(--color-line)] rounded tracking-[0.04em]"
           style={{ fontFamily: "var(--font-mono)" }}
         >
-          ⌘K
+          {cmdKey}K
         </kbd>
       </div>
 
@@ -210,7 +211,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
       <button
         onClick={newNote}
         className="no-drag flex items-center gap-2 px-2 py-2 rounded-md text-sm text-left text-[var(--color-text-muted)] hover:bg-[var(--color-pill-hover)] hover:text-[var(--color-text)] transition-colors"
-        title="⌘N"
+        title={`${cmdKey}N`}
       >
         <Plus size={15} strokeWidth={1.5} />
         <span>New note</span>
@@ -284,7 +285,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
       <Link
         to="/settings"
         className="no-drag flex items-center gap-2 px-2 py-2 rounded-md text-sm text-[var(--color-text-muted)] hover:bg-[var(--color-pill-hover)] hover:text-[var(--color-text)] transition-colors"
-        title="⌘,"
+        title={`${cmdKey},`}
       >
         <SettingsIcon size={15} strokeWidth={1.5} />
         <span>Settings</span>

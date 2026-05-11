@@ -1,6 +1,7 @@
 import type { DiarizeState } from "../types";
 import { Btn } from "./Btn";
 import { formatBytes } from "./format";
+import { acceleratorName } from "../../../lib/platform";
 
 export function DiarizeModelManager({
   state,
@@ -15,7 +16,7 @@ export function DiarizeModelManager({
     const pct = Math.min(100, state.fraction * 100);
     const phaseLabel =
       state.phase === "compiling"
-        ? "Compiling for Apple Neural Engine"
+        ? `Compiling for ${acceleratorName}`
         : state.phase === "listing"
         ? "Listing files"
         : "Downloading models";
@@ -69,8 +70,8 @@ export function DiarizeModelManager({
   return (
     <div className="flex flex-col gap-2">
       <div className="text-sm">
-        Not downloaded. The model is ~15 MB. First-time setup also compiles
-        for the Apple Neural Engine, which takes 20-30 s.
+        Not downloaded. The model is ~46 MB. First-time setup also prepares
+        the {acceleratorName} runtime.
       </div>
       <div className="flex gap-2">
         <Btn onClick={onDownload}>Download model</Btn>

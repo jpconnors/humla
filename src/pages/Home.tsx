@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { ipc } from "../lib/ipc";
 import { useNotesStore } from "../lib/store";
+import { cmdKey } from "../lib/platform";
 
 export function Home() {
   const navigate = useNavigate();
@@ -21,7 +22,7 @@ export function Home() {
           className="px-2 py-0.5 border border-[var(--color-line-visible)] rounded text-xs"
           style={{ fontFamily: "var(--font-mono)" }}
         >
-          ⌘N
+          {cmdKey}N
         </kbd>
         <span>to start a new note</span>
       </div>

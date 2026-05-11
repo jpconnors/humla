@@ -21,7 +21,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls", "stream"], default-features = false }
+# native-tls (schannel on Windows, Security.framework on macOS) over
+# rustls. rustls bundles the Mozilla root store, which can't validate
+# corporate MITM certs an end user's IT department may inject — the
+# diarize sidecar hit `UnknownIssuer` against HuggingFace on a managed
+# Suffolk machine until it switched. Same lesson here for the main
+# backend's HF / OpenAI / Deepgram / Groq calls.
+reqwest = { version = "0.12", features = ["json", "multipart", "native-tls", "stream"], default-features = false }
 futures-util = "0.3"
 # Local LLM inference is delegated to whichever OpenAI-compatible HTTP server
 # the user runs (Ollama, LM Studio, llama-server, vLLM, …). We reuse the

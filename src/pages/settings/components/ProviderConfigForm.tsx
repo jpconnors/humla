@@ -9,6 +9,7 @@ import {
   type Provider,
 } from "../types";
 import { Select } from "./Select";
+import { whisperAcceleratorLabel } from "../../../lib/platform";
 
 type LocalModelSummary = {
   id: string;
@@ -148,7 +149,7 @@ export function ProviderConfigForm({
                 onChange({ ...value, use_gpu: e.target.checked })
               }
             />
-            Use Metal (Apple GPU) for Whisper inference
+            {whisperAcceleratorLabel}
           </label>
         </>
       )}

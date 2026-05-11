@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { ipc, onSummaryThinkingDelta, onSummaryContentDelta, type Note as TNote, type SummaryPrompt, type TimelineEntry } from "../lib/ipc";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileManagerName } from "../lib/platform";
 import { useNotesStore, useRecordingStore } from "../lib/store";
 import { RecordingBar } from "../components/RecordingBar";
 import { SkeletonLines } from "../components/Skeleton";
@@ -1800,7 +1801,7 @@ function DiagnosticsLinks({ noteId }: { noteId: string }) {
             type="button"
             onClick={openDiag}
             className="underline hover:text-[var(--color-text)]"
-            title="Open diagnostics folder in Finder"
+            title={`Open diagnostics folder in ${fileManagerName}`}
           >
             Diagnostics ({diagFiles.length})
           </button>
@@ -1810,7 +1811,7 @@ function DiagnosticsLinks({ noteId }: { noteId: string }) {
             type="button"
             onClick={openAudio}
             className="underline hover:text-[var(--color-text)]"
-            title="Open retained audio folder in Finder"
+            title={`Open retained audio folder in ${fileManagerName}`}
           >
             Audio ({audioFiles.length})
           </button>

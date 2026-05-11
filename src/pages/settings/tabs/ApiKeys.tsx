@@ -1,6 +1,7 @@
 import { ApiKeyField } from "../components/ApiKeyField";
 import { Row, Section } from "../components/Section";
 import type { SettingsHook } from "../useSettings";
+import { credentialStoreName } from "../../../lib/platform";
 
 export function ApiKeysTab({
   openaiKey,
@@ -36,7 +37,7 @@ export function ApiKeysTab({
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
             Used for cloud transcription (Whisper / gpt-4o-transcribe) and
             cloud summarization when those providers are selected. Stored
-            locally in the macOS Keychain; not sent anywhere except OpenAI.
+            locally in the {credentialStoreName}; not sent anywhere except OpenAI.
           </p>
         </Row>
       </Section>
@@ -52,7 +53,7 @@ export function ApiKeysTab({
           />
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
             Required when Transcription provider is set to Deepgram.
-            Stored in the macOS Keychain; sent only to api.deepgram.com.
+            Stored in the {credentialStoreName}; sent only to api.deepgram.com.
           </p>
         </Row>
       </Section>
@@ -69,8 +70,8 @@ export function ApiKeysTab({
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
             Required when Transcription provider is set to Groq. Hosts
             <code> whisper-large-v3-turbo </code> at roughly 10× the speed
-            of OpenAI Whisper. Stored in the macOS Keychain; sent only to
-            api.groq.com.
+            of OpenAI Whisper. Stored in the {credentialStoreName}; sent only
+            to api.groq.com.
           </p>
         </Row>
       </Section>

@@ -9,6 +9,7 @@ import {
   inputClass,
 } from "../types";
 import type { SettingsHook } from "../useSettings";
+import { deviceName } from "../../../lib/platform";
 
 export function SummaryTab({
   s,
@@ -26,7 +27,7 @@ export function SummaryTab({
             options={SUMMARY_PROVIDERS}
           />
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
-            Local keeps the transcript on your Mac — pick this for confidential
+            Local keeps the transcript on your {deviceName} — pick this for confidential
             meetings. Cloud is faster and produces better summaries but sends
             the transcript to OpenAI.
           </p>
