@@ -1602,13 +1602,22 @@ pub struct PermissionsStatus {
 
 async fn run_sidecar_cmd(app: &AppHandle, mode: &str) -> Result<String, String> {
     let path = sidecar_path(app)?;
-    let mut child = tokio::process::Command::new(&path)
-        .arg(mode)
+    let mut cmd = tokio::process::Command::new(&path);
+    cmd.arg(mode)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("spawn: {e}"))?;
+        .kill_on_drop(true);
+    // Hide the sidecar's console — Settings open calls permissions_status
+    // which calls this helper, so without the flag every Settings open
+    // flashes a black window on Windows. Same incantation as the main
+    // audio-capture spawn below.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
     let fut = child.wait_with_output();
     match tokio::time::timeout(std::time::Duration::from_secs(3), fut).await {
         Ok(Ok(out)) => Ok(String::from_utf8_lossy(&out.stdout).to_string()),
@@ -1666,9 +1675,18 @@ pub async fn permissions_open_settings(kind: String) -> Result<(), String> {
             _ => return Err("unknown kind".into()),
         };
         // `cmd /c start <url>` lets the URL handler resolve ms-settings:.
-        tokio::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
+        // CREATE_NO_WINDOW so cmd.exe doesn't flash a console on its way
+        // out — `start` returns immediately after handing the URL to the
+        // shell, but the window is visible just long enough to be visual
+        // noise.
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", url]);
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.spawn()
             .map_err(|e| format!("start: {e}"))?
             .wait()
             .await
