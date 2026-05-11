@@ -87,7 +87,7 @@ export function AboutTab() {
 
   return (
     <>
-      <Section title="Humla">
+      <Section title="HoneyScribe">
         <Row label="Version">
           <div
             className="text-sm cursor-default select-none inline-block"
@@ -114,7 +114,7 @@ export function AboutTab() {
           )}
           <p className="text-xs text-[var(--color-text-muted)] mt-2">
             Updates are checked automatically on launch and can be triggered
-            manually from <code>Humla → Check for Updates…</code> in the
+            manually from <code>HoneyScribe → Check for Updates…</code> in the
             menu bar.
           </p>
         </Row>
